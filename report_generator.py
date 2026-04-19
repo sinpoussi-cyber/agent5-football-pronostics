@@ -42,6 +42,82 @@ def _match_time(utc_date: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+#  Ensemble model section                                                      #
+# --------------------------------------------------------------------------- #
+
+def _render_ensemble_section(p: dict) -> str:
+    ensemble = p.get("ensemble")
+    if not ensemble:
+        return ""
+
+    m_poisson = p.get("model_poisson", {})
+    m_dixon   = p.get("model_dixon", {})
+    m_elo     = p.get("model_elo", {})
+    m_xg      = p.get("model_xg", {})
+
+    def row(label: str, m: dict, weight: str) -> str:
+        return (
+            f'<tr style="border-bottom:1px solid #ecf0f1;">'
+            f'<td style="padding:4px 8px;font-weight:bold;">{label}</td>'
+            f'<td style="padding:4px 8px;text-align:center;">{weight}</td>'
+            f'<td style="padding:4px 8px;text-align:center;">{m.get("p1", 0):.1f}%</td>'
+            f'<td style="padding:4px 8px;text-align:center;">{m.get("px", 0):.1f}%</td>'
+            f'<td style="padding:4px 8px;text-align:center;">{m.get("p2", 0):.1f}%</td>'
+            f'</tr>'
+        )
+
+    p1_w  = ensemble.get("p1", {}).get("weighted", 0)
+    px_w  = ensemble.get("px", {}).get("weighted", 0)
+    p2_w  = ensemble.get("p2", {}).get("weighted", 0)
+
+    # Confidence: std deviation across models for the dominant outcome
+    import statistics as _stats
+    vals_p1 = [m_poisson.get("p1",0), m_dixon.get("p1",0), m_elo.get("p1",0), m_xg.get("p1",0)]
+    std_dev = _stats.stdev(vals_p1) if len(vals_p1) > 1 else 0
+    if std_dev < 4:
+        conf_label, conf_color = "Élevée", "#2ecc71"
+    elif std_dev < 9:
+        conf_label, conf_color = "Moyenne", "#f39c12"
+    else:
+        conf_label, conf_color = "Faible", "#e74c3c"
+
+    return f"""
+  <div style="margin:0 16px 12px;border:1px solid #d5e8d4;border-radius:6px;overflow:hidden;">
+    <div style="background:#1a6b3c;color:#fff;padding:8px 12px;font-weight:bold;font-size:13px;">
+      🔬 Méthode — Comparatif 4 modèles
+    </div>
+    <table width="100%" style="font-size:12px;border-collapse:collapse;">
+      <thead style="background:#f8f9fa;">
+        <tr>
+          <th style="padding:4px 8px;text-align:left;">Modèle</th>
+          <th style="padding:4px 8px;text-align:center;">Poids</th>
+          <th style="padding:4px 8px;text-align:center;">P1 (%)</th>
+          <th style="padding:4px 8px;text-align:center;">PX (%)</th>
+          <th style="padding:4px 8px;text-align:center;">P2 (%)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {row("Poisson", m_poisson, "25%")}
+        {row("Dixon-Coles", m_dixon, "35%")}
+        {row("Elo", m_elo, "15%")}
+        {row("xG ajusté", m_xg, "25%")}
+        <tr style="background:#eafaf1;font-weight:bold;">
+          <td style="padding:5px 8px;">FUSION PONDÉRÉE</td>
+          <td style="padding:5px 8px;text-align:center;">100%</td>
+          <td style="padding:5px 8px;text-align:center;">{p1_w:.1f}%</td>
+          <td style="padding:5px 8px;text-align:center;">{px_w:.1f}%</td>
+          <td style="padding:5px 8px;text-align:center;">{p2_w:.1f}%</td>
+        </tr>
+      </tbody>
+    </table>
+    <div style="padding:6px 12px;font-size:12px;color:#555;">
+      Convergence modèles : <span style="color:{conf_color};font-weight:bold;">{conf_label}</span>
+      <span style="color:#999;margin-left:8px;">(σ P1 = {std_dev:.1f}pp)</span>
+    </div>
+  </div>"""
+
+
+# --------------------------------------------------------------------------- #
 #  Match card HTML                                                             #
 # --------------------------------------------------------------------------- #
 
@@ -215,6 +291,9 @@ def _render_match_card(entry: dict) -> str:
     </div>
 
   </div>
+
+  <!-- Ensemble model comparison -->
+  {_render_ensemble_section(p)}
 
   <!-- AI narrative -->
   {"" if not narrative else f'''

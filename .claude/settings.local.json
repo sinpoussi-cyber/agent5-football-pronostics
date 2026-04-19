@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import pronostic_engine; import report_generator; print\\('OK'\\)\")",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

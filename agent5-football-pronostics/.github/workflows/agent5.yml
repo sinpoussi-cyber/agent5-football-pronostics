@@ -1,0 +1,148 @@
+name: Agent 5 Football Pronostics
+
+on:
+  # Rapport quotidien — 6h UTC chaque jour
+  schedule:
+    - cron: '0 6 * * *'    # rapport-quotidien
+    - cron: '0 9 * * *'    # rapport-avant-matchs
+    - cron: '0 7 * * 1'    # rapport-hebdo (lundi)
+
+  # Lancement manuel depuis l'interface GitHub Actions
+  workflow_dispatch:
+    inputs:
+      report_type:
+        description: "Type de rapport"
+        required: true
+        default: "quotidien"
+        type: choice
+        options:
+          - quotidien
+          - avant
+          - hebdo
+      use_ai:
+        description: "Activer l'analyse Claude AI"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      dry_run:
+        description: "Dry-run (ne pas envoyer l'email)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+env:
+  FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
+  RAPIDAPI_KEY:          ${{ secrets.RAPIDAPI_KEY }}
+  ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
+  GMAIL_SENDER:          ${{ secrets.GMAIL_SENDER }}
+  GMAIL_RECIPIENT:       ${{ secrets.GMAIL_RECIPIENT }}
+  SMTP_SERVER:           ${{ secrets.SMTP_SERVER }}
+  SMTP_PORT:             ${{ secrets.SMTP_PORT }}
+  SMTP_PASSWORD:         ${{ secrets.SMTP_PASSWORD }}
+
+jobs:
+  # ------------------------------------------------------------------ #
+  #  Rapport quotidien — 6h UTC                                         #
+  # ------------------------------------------------------------------ #
+  rapport-quotidien:
+    name: Rapport Quotidien (6h UTC)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && github.event.schedule == '0 6 * * *'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run agent (rapport quotidien)
+        run: python main.py --type quotidien
+
+  # ------------------------------------------------------------------ #
+  #  Rapport avant matchs — 9h UTC                                      #
+  # ------------------------------------------------------------------ #
+  rapport-avant-matchs:
+    name: Rapport Avant Matchs (9h UTC)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && github.event.schedule == '0 9 * * *'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run agent (avant matchs)
+        run: python main.py --type avant
+
+  # ------------------------------------------------------------------ #
+  #  Rapport hebdomadaire — lundi 7h UTC                               #
+  # ------------------------------------------------------------------ #
+  rapport-hebdo:
+    name: Rapport Hebdomadaire (Lundi 7h UTC)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' && github.event.schedule == '0 7 * * 1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run agent (hebdo)
+        run: python main.py --type hebdo
+
+  # ------------------------------------------------------------------ #
+  #  Lancement manuel                                                   #
+  # ------------------------------------------------------------------ #
+  rapport-manuel:
+    name: Rapport Manuel
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build command
+        id: build_cmd
+        run: |
+          CMD="python main.py --type ${{ github.event.inputs.report_type }}"
+          if [ "${{ github.event.inputs.use_ai }}" = "false" ]; then CMD="$CMD --no-ai"; fi
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then CMD="$CMD --dry-run"; fi
+          echo "cmd=$CMD" >> $GITHUB_OUTPUT
+
+      - name: Run agent
+        run: ${{ steps.build_cmd.outputs.cmd }}
+
+      - name: Upload dry-run HTML report (if any)
+        if: github.event.inputs.dry_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-html
+          path: "rapport_*.html"
+          retention-days: 7

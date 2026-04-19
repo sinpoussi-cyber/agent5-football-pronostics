@@ -32,7 +32,7 @@ def send_report(subject: str, html_body: str) -> bool:
         logger.info("connect() OK")
         smtp.ehlo()
         logger.info("ehlo() 1 OK")
-        smtp.starttls()
+        smtp.starttls(server_hostname=smtp_server)
         logger.info("starttls() OK")
         smtp.ehlo()
         logger.info("ehlo() 2 OK")

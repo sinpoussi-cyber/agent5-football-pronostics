@@ -25,15 +25,26 @@ def send_report(subject: str, html_body: str) -> bool:
     msg.attach(MIMEText(html_body, "html"))
 
     try:
-        smtp = smtplib.SMTP(smtp_server, port, timeout=30)
+        logger.info(f"Connexion SMTP à {smtp_server}:{port} depuis {sender}")
+        smtp = smtplib.SMTP()
+        logger.info("SMTP object créé")
+        smtp.connect(smtp_server, port)
+        logger.info("connect() OK")
         smtp.ehlo()
+        logger.info("ehlo() 1 OK")
         smtp.starttls()
+        logger.info("starttls() OK")
         smtp.ehlo()
+        logger.info("ehlo() 2 OK")
         smtp.login(sender, password)
+        logger.info("login() OK")
         smtp.sendmail(sender, recipient, msg.as_string())
+        logger.info("sendmail() OK")
         smtp.quit()
         logger.info(f"Email envoyé avec succès à {recipient}")
         return True
     except Exception as e:
-        logger.error(f"SMTP error: {e}")
+        logger.error(f"SMTP error at step: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False

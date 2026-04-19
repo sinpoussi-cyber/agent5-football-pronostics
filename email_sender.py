@@ -1,23 +1,18 @@
-"""
-Sends the HTML report via SMTP (Gmail).
-"""
-
-import os
 import smtplib
+import os
 import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 logger = logging.getLogger(__name__)
 
-
 def send_report(subject: str, html_body: str) -> bool:
-    sender    = os.environ.get("REPORT_EMAIL_FROM", "")
+    sender   = os.environ.get("REPORT_EMAIL_FROM", "")
     recipient = os.environ.get("REPORT_EMAIL_TO", "")
-    password  = os.environ.get("SMTP_PASSWORD", "")
-    server    = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-    port_str  = os.environ.get("SMTP_PORT", "587")
-    port      = int(port_str) if port_str and port_str.strip() else 587
+    smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+    port_str = os.environ.get("SMTP_PORT", "587")
+    port = int(port_str) if port_str and port_str.strip() else 587
+    password = os.environ.get("SMTP_PASSWORD", "")
 
     if not all([sender, recipient, password]):
         logger.error("Missing SMTP credentials (REPORT_EMAIL_FROM, REPORT_EMAIL_TO, SMTP_PASSWORD)")
@@ -25,21 +20,19 @@ def send_report(subject: str, html_body: str) -> bool:
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"]    = sender
-    msg["To"]      = recipient
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    msg["From"] = sender
+    msg["To"] = recipient
+    msg.attach(MIMEText(html_body, "html"))
 
     try:
-        with smtplib.SMTP(server, port) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.login(sender, password)
-            smtp.sendmail(sender, recipient, msg.as_string())
-        logger.info("Email sent to %s", recipient)
+        with smtplib.SMTP(smtp_server, port, timeout=30) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(sender, password)
+            server.sendmail(sender, recipient, msg.as_string())
+        logger.info(f"Email envoyé avec succès à {recipient}")
         return True
-    except smtplib.SMTPAuthenticationError:
-        logger.error("SMTP authentication failed — check REPORT_EMAIL_FROM and SMTP_PASSWORD")
-        return False
     except Exception as e:
-        logger.error("SMTP error: %s", e)
+        logger.error(f"SMTP error: {e}")
         return False

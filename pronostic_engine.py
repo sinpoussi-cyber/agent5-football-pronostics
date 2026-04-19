@@ -15,6 +15,30 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
+# League-specific average goals (home, away) used when team stats are unavailable
+_LEAGUE_DEFAULTS: dict[str, tuple[float, float]] = {
+    "premier league":   (1.5, 1.2),
+    "ligue 1":          (1.3, 1.1),
+    "bundesliga":       (1.7, 1.3),
+    "serie a":          (1.3, 1.0),
+    "laliga":           (1.4, 1.1),
+    "liga portugal":    (1.4, 1.1),
+    "primeira liga":    (1.4, 1.1),
+    "championship":     (1.4, 1.1),
+    "eredivisie":       (1.6, 1.3),
+    "champions league": (1.5, 1.2),
+}
+_DEFAULT_GOALS = (1.35, 1.10)  # generic fallback
+
+
+def _league_defaults(competition: str) -> tuple[float, float]:
+    key = competition.lower()
+    for name, vals in _LEAGUE_DEFAULTS.items():
+        if name in key:
+            return vals
+    return _DEFAULT_GOALS
+
+
 # --------------------------------------------------------------------------- #
 #  Poisson helpers                                                             #
 # --------------------------------------------------------------------------- #
@@ -38,10 +62,16 @@ def _expected_goals(match: dict) -> tuple[float, float]:
     """Compute expected goals for home and away teams."""
     league_avg = 1.35  # typical goals per team per match
 
-    home_att = max(match["home_avg_scored"],  0.5)
-    home_def = max(match["home_avg_conceded"], 0.5)
-    away_att = max(match["away_avg_scored"],  0.5)
-    away_def = max(match["away_avg_conceded"], 0.5)
+    league_home_avg, league_away_avg = _league_defaults(match.get("competition", ""))
+
+    # When form data is absent (avg == 0.0 or rank == 99), fall back to league averages
+    def _or_league(val: float, league_val: float) -> float:
+        return league_val if val == 0.0 else val
+
+    home_att = max(_or_league(match["home_avg_scored"],   league_home_avg), 0.5)
+    home_def = max(_or_league(match["home_avg_conceded"], league_away_avg), 0.5)
+    away_att = max(_or_league(match["away_avg_scored"],   league_away_avg), 0.5)
+    away_def = max(_or_league(match["away_avg_conceded"], league_home_avg), 0.5)
 
     # Home advantage modifier
     home_advantage = 1.10

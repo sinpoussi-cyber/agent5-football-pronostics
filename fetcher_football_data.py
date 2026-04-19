@@ -34,10 +34,14 @@ def _headers() -> dict:
     return {"X-Auth-Token": key}
 
 
+_standings_cache: dict[str, list] = {}
+
+
 def _get(endpoint: str, params: dict = None) -> dict | list | None:
     url = f"{BASE_URL}{endpoint}"
     try:
         resp = requests.get(url, headers=_headers(), params=params or {}, timeout=20)
+        time.sleep(6)  # respect 10 req/min limit for every request
         resp.raise_for_status()
         return resp.json()
     except requests.HTTPError as e:
@@ -82,7 +86,6 @@ def get_upcoming_matches() -> list[dict]:
 
 def get_team_form(team_id: int, limit: int = 5) -> list[dict]:
     data = _get(f"/teams/{team_id}/matches", {"status": "FINISHED", "limit": limit})
-    time.sleep(6)
     if not data:
         return []
     return data.get("matches", [])[-limit:]
@@ -94,29 +97,37 @@ def get_team_form(team_id: int, limit: int = 5) -> list[dict]:
 
 def get_h2h(match_id: int, limit: int = 5) -> list[dict]:
     data = _get(f"/matches/{match_id}/head2head", {"limit": limit})
-    time.sleep(6)
     if not data:
         return []
     return data.get("matches", [])[-limit:]
 
 
 # --------------------------------------------------------------------------- #
-#  Standing (current table)                                                    #
+#  Standing (current table) — cached per competition                           #
 # --------------------------------------------------------------------------- #
 
 def get_standings(competition_code: str) -> list[dict]:
+    if competition_code in _standings_cache:
+        logger.debug("Standings cache hit: %s", competition_code)
+        return _standings_cache[competition_code]
+
     data = _get(f"/competitions/{competition_code}/standings")
-    time.sleep(6)
     if not data:
+        _standings_cache[competition_code] = []
         return []
     standings = data.get("standings", [])
     if not standings:
+        _standings_cache[competition_code] = []
         return []
     # Return the TOTAL table
     for table in standings:
         if table.get("type") == "TOTAL":
-            return table.get("table", [])
-    return standings[0].get("table", [])
+            result = table.get("table", [])
+            _standings_cache[competition_code] = result
+            return result
+    result = standings[0].get("table", [])
+    _standings_cache[competition_code] = result
+    return result
 
 
 # --------------------------------------------------------------------------- #

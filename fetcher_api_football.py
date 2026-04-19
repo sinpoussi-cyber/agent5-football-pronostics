@@ -78,10 +78,34 @@ def _get(endpoint: str, params: dict = None) -> dict | None:
 
 
 # --------------------------------------------------------------------------- #
+#  API key validation                                                          #
+# --------------------------------------------------------------------------- #
+
+def check_api_status() -> bool:
+    url = f"{BASE_URL}/status"
+    logger.info("API-Football status check — URL: %s", url)
+    try:
+        resp = requests.get(url, headers=_headers(), timeout=20)
+        if resp.status_code == 403:
+            logger.error("RAPIDAPI_KEY invalide ou abonnement API-Football inactif sur RapidAPI")
+            return False
+        resp.raise_for_status()
+        return True
+    except requests.HTTPError as e:
+        logger.warning("HTTP %s on status check: %s", e.response.status_code, e)
+        return False
+    except Exception as e:
+        logger.error("Status check error: %s", e)
+        return False
+
+
+# --------------------------------------------------------------------------- #
 #  Upcoming fixtures (today)                                                   #
 # --------------------------------------------------------------------------- #
 
 def get_upcoming_fixtures() -> list[dict]:
+    if not check_api_status():
+        return []
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     fixtures = []
     for league_id, league_name in LEAGUES.items():

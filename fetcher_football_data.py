@@ -4,6 +4,7 @@ Covers: PL, ELC, FL1, PD, BL1, SA, DED, PPL, CL, WC
 """
 
 import os
+import time
 import requests
 import logging
 from datetime import datetime, timedelta, timezone
@@ -81,6 +82,7 @@ def get_upcoming_matches() -> list[dict]:
 
 def get_team_form(team_id: int, limit: int = 5) -> list[dict]:
     data = _get(f"/teams/{team_id}/matches", {"status": "FINISHED", "limit": limit})
+    time.sleep(6)
     if not data:
         return []
     return data.get("matches", [])[-limit:]
@@ -92,6 +94,7 @@ def get_team_form(team_id: int, limit: int = 5) -> list[dict]:
 
 def get_h2h(match_id: int, limit: int = 5) -> list[dict]:
     data = _get(f"/matches/{match_id}/head2head", {"limit": limit})
+    time.sleep(6)
     if not data:
         return []
     return data.get("matches", [])[-limit:]
@@ -103,6 +106,7 @@ def get_h2h(match_id: int, limit: int = 5) -> list[dict]:
 
 def get_standings(competition_code: str) -> list[dict]:
     data = _get(f"/competitions/{competition_code}/standings")
+    time.sleep(6)
     if not data:
         return []
     standings = data.get("standings", [])

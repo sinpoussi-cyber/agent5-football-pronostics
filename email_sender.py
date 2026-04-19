@@ -16,7 +16,8 @@ def send_report(subject: str, html_body: str) -> bool:
     recipient = os.environ.get("REPORT_EMAIL_TO", "")
     password  = os.environ.get("SMTP_PASSWORD", "")
     server    = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-    port      = int(os.environ.get("SMTP_PORT", "587"))
+    port_str  = os.environ.get("SMTP_PORT", "587")
+    port      = int(port_str) if port_str and port_str.strip() else 587
 
     if not all([sender, recipient, password]):
         logger.error("Missing SMTP credentials (REPORT_EMAIL_FROM, REPORT_EMAIL_TO, SMTP_PASSWORD)")

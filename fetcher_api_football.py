@@ -46,6 +46,7 @@ LEAGUES = {
 
 def _headers() -> dict:
     key = os.environ.get("RAPIDAPI_KEY", "")
+    logger.info("RAPIDAPI_KEY chargée : %s... (longueur: %d)", key[:8], len(key))
     if not key:
         raise EnvironmentError("RAPIDAPI_KEY is not set")
     return {

@@ -274,6 +274,12 @@ Analyse concise en mettant en avant les facteurs décisifs et le pronostic le pl
             messages=[{"role": "user", "content": prompt}],
         )
         return message.content[0].text
+    except anthropic.BadRequestError as e:
+        if "credit balance too low" in str(e).lower():
+            logger.warning("Anthropic credits insufficient: %s", e)
+            return "Analyse IA indisponible (crédits insuffisants)"
+        logger.error("Claude API error: %s", e)
+        return f"Analyse IA indisponible : {e}"
     except Exception as e:
         logger.error("Claude API error: %s", e)
         return f"Analyse IA indisponible : {e}"

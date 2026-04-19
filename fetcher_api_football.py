@@ -8,6 +8,7 @@ Covers: Europa, Conférence, Serie A IT, Pro League BE, Süper Lig TR,
 """
 
 import os
+import time
 import requests
 import logging
 from datetime import datetime, timezone
@@ -55,16 +56,24 @@ def _headers() -> dict:
 
 def _get(endpoint: str, params: dict = None) -> dict | None:
     url = f"{BASE_URL}{endpoint}"
-    try:
-        resp = requests.get(url, headers=_headers(), params=params or {}, timeout=20)
-        resp.raise_for_status()
-        return resp.json()
-    except requests.HTTPError as e:
-        logger.warning("HTTP %s on %s: %s", e.response.status_code, url, e)
-        return None
-    except Exception as e:
-        logger.error("Request error on %s: %s", url, e)
-        return None
+    for attempt in range(1, 4):
+        try:
+            time.sleep(1)
+            resp = requests.get(url, headers=_headers(), params=params or {}, timeout=20)
+            if resp.status_code == 429:
+                logger.warning("HTTP 429 on %s (attempt %d/3) — waiting 5s", url, attempt)
+                time.sleep(5)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as e:
+            logger.warning("HTTP %s on %s: %s", e.response.status_code, url, e)
+            return None
+        except Exception as e:
+            logger.error("Request error on %s: %s", url, e)
+            return None
+    logger.error("All 3 attempts failed for %s", url)
+    return None
 
 
 # --------------------------------------------------------------------------- #

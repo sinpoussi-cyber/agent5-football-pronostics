@@ -53,8 +53,8 @@ def _get(endpoint: str, params: dict = None) -> dict | list | None:
 
 def get_upcoming_matches() -> list[dict]:
     now = datetime.now(timezone.utc)
-    date_from = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    date_to = (now + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    date_from = now.strftime("%Y-%m-%d")
+    date_to = (now + timedelta(hours=24)).strftime("%Y-%m-%d")
 
     matches = []
     for code, name in COMPETITIONS.items():

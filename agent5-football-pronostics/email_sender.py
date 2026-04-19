@@ -12,14 +12,14 @@ logger = logging.getLogger(__name__)
 
 
 def send_report(subject: str, html_body: str) -> bool:
-    sender    = os.environ.get("GMAIL_SENDER", "")
-    recipient = os.environ.get("GMAIL_RECIPIENT", "")
+    sender    = os.environ.get("REPORT_EMAIL_FROM", "")
+    recipient = os.environ.get("REPORT_EMAIL_TO", "")
     password  = os.environ.get("SMTP_PASSWORD", "")
     server    = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
     port      = int(os.environ.get("SMTP_PORT", "587"))
 
     if not all([sender, recipient, password]):
-        logger.error("Missing SMTP credentials (GMAIL_SENDER, GMAIL_RECIPIENT, SMTP_PASSWORD)")
+        logger.error("Missing SMTP credentials (REPORT_EMAIL_FROM, REPORT_EMAIL_TO, SMTP_PASSWORD)")
         return False
 
     msg = MIMEMultipart("alternative")
@@ -37,7 +37,7 @@ def send_report(subject: str, html_body: str) -> bool:
         logger.info("Email sent to %s", recipient)
         return True
     except smtplib.SMTPAuthenticationError:
-        logger.error("SMTP authentication failed — check GMAIL_SENDER and SMTP_PASSWORD")
+        logger.error("SMTP authentication failed — check REPORT_EMAIL_FROM and SMTP_PASSWORD")
         return False
     except Exception as e:
         logger.error("SMTP error: %s", e)

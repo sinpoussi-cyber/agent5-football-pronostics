@@ -40,8 +40,8 @@ env:
   FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
   RAPIDAPI_KEY:          ${{ secrets.RAPIDAPI_KEY }}
   ANTHROPIC_API_KEY:     ${{ secrets.ANTHROPIC_API_KEY }}
-  GMAIL_SENDER:          ${{ secrets.GMAIL_SENDER }}
-  GMAIL_RECIPIENT:       ${{ secrets.GMAIL_RECIPIENT }}
+  REPORT_EMAIL_FROM:     ${{ secrets.REPORT_EMAIL_FROM }}
+  REPORT_EMAIL_TO:       ${{ secrets.REPORT_EMAIL_TO }}
   SMTP_SERVER:           ${{ secrets.SMTP_SERVER }}
   SMTP_PORT:             ${{ secrets.SMTP_PORT }}
   SMTP_PASSWORD:         ${{ secrets.SMTP_PASSWORD }}

@@ -1,4 +1,5 @@
 import smtplib
+import ssl
 import os
 import logging
 from email.mime.multipart import MIMEMultipart
@@ -32,7 +33,8 @@ def send_report(subject: str, html_body: str) -> bool:
         logger.info("connect() OK")
         smtp.ehlo()
         logger.info("ehlo() 1 OK")
-        smtp.starttls(server_hostname=smtp_server)
+        context = ssl.create_default_context()
+        smtp.starttls(context=context)
         logger.info("starttls() OK")
         smtp.ehlo()
         logger.info("ehlo() 2 OK")

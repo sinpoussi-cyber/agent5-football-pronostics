@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger("agent5")
 
 import fetcher_football_data as fbd
-import fetcher_api_football  as faf
+import fetcher_sport_api     as faf
 from analyzer         import analyze_matches
 from pronostic_engine import run_engine
 from report_generator import generate_html_report, generate_subject
@@ -59,12 +59,12 @@ def main() -> None:
     except Exception as e:
         logger.error("football-data fetch failed: %s", e)
 
-    logger.info("Fetching data from API-Football …")
+    logger.info("Fetching data from SportAPI …")
     raw_faf = []
     try:
         raw_faf = faf.fetch_all_enriched()
     except Exception as e:
-        logger.error("api-football fetch failed: %s", e)
+        logger.error("sport-api fetch failed: %s", e)
 
     all_raw = raw_fbd + raw_faf
     logger.info("Total raw matches collected: %d", len(all_raw))

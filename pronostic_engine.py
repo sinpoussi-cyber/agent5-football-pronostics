@@ -407,6 +407,183 @@ def compute_odd_even(matrix: list[list[float]]) -> dict:
     return {"Even": round(even_p, 4), "Odd": round(1 - even_p, 4)}
 
 
+def compute_draw_no_bet(p1x2: dict) -> dict:
+    p1 = p1x2["1"]
+    p2 = p1x2["2"]
+    total = p1 + p2
+    if total <= 0:
+        return {"DNB_home": 0.5, "DNB_away": 0.5}
+    return {
+        "DNB_home": round(p1 / total, 4),
+        "DNB_away": round(p2 / total, 4),
+    }
+
+
+def compute_both_halves_goal(lam_home: float, lam_away: float) -> dict:
+    lam_total = lam_home + lam_away
+    p_ht1 = 1 - math.exp(-lam_total * 0.45)
+    p_ht2 = 1 - math.exp(-lam_total * 0.55)
+    p_both = p_ht1 * p_ht2
+    return {
+        "BHG_ht1":  round(p_ht1, 4),
+        "BHG_ht2":  round(p_ht2, 4),
+        "BHG_both": round(p_both, 4),
+    }
+
+
+def compute_first_goal_time(lam_home: float, lam_away: float) -> dict:
+    lam = lam_home + lam_away
+    return {
+        "FG_before_15":  round(1 - math.exp(-lam * 15 / 90), 4),
+        "FG_before_30":  round(1 - math.exp(-lam * 30 / 90), 4),
+        "FG_before_45":  round(1 - math.exp(-lam * 45 / 90), 4),
+        "FG_after_75":   round(math.exp(-lam * 75 / 90), 4),
+    }
+
+
+def compute_win_to_nil(matrix: list[list[float]]) -> dict:
+    home_wtn = sum(
+        matrix[h][0]
+        for h in range(1, len(matrix))
+    )
+    away_wtn = sum(
+        matrix[0][a]
+        for a in range(1, len(matrix[0]))
+    )
+    return {
+        "WTN_home": round(home_wtn, 4),
+        "WTN_away": round(away_wtn, 4),
+    }
+
+
+def compute_halftime_fulltime(lam_home: float, lam_away: float,
+                               ft_matrix: list[list[float]]) -> dict:
+    lam_h_ht = lam_home * 0.45
+    lam_a_ht = lam_away * 0.45
+    ht_matrix = _score_matrix(lam_h_ht, lam_a_ht, max_goals=4)
+
+    # P(HT outcome) * P(FT outcome | HT) — approximated as independent
+    # ht_matrix for halftime probs, ft_matrix for full-time probs
+    ht_1x2 = compute_1x2(ht_matrix)
+    ft_1x2 = compute_1x2(ft_matrix)
+
+    combos = {
+        "HTFT_1/1": ht_1x2["1"] * ft_1x2["1"],
+        "HTFT_X/1": ht_1x2["X"] * ft_1x2["1"],
+        "HTFT_2/2": ht_1x2["2"] * ft_1x2["2"],
+        "HTFT_X/X": ht_1x2["X"] * ft_1x2["X"],
+        "HTFT_1/X": ht_1x2["1"] * ft_1x2["X"],
+        "HTFT_X/2": ht_1x2["X"] * ft_1x2["2"],
+    }
+    return {k: round(v, 4) for k, v in combos.items()}
+
+
+def compute_corners_by_team(match: dict) -> dict:
+    avg_home = match.get("home_avg_corners", 5.5) or 5.5
+    avg_away = match.get("away_avg_corners", 4.5) or 4.5
+
+    result = {}
+    for t in [4.5, 5.5, 6.5]:
+        p_over = 1 - sum(_poisson_pmf(k, avg_home) for k in range(int(t) + 1))
+        result[f"Corn_H_O{t}"] = round(p_over, 4)
+        result[f"Corn_H_U{t}"] = round(1 - p_over, 4)
+    for t in [3.5, 4.5, 5.5]:
+        p_over = 1 - sum(_poisson_pmf(k, avg_away) for k in range(int(t) + 1))
+        result[f"Corn_A_O{t}"] = round(p_over, 4)
+        result[f"Corn_A_U{t}"] = round(1 - p_over, 4)
+    # Handicap corners domicile -1.5 (home corners - away corners > 1.5)
+    p_hc = sum(
+        _poisson_pmf(h, avg_home) * _poisson_pmf(a, avg_away)
+        for h in range(15)
+        for a in range(15)
+        if h - a > 1.5
+    )
+    result["Corn_HC_home_-1.5"] = round(p_hc, 4)
+    return result
+
+
+def compute_cards_by_team(match: dict) -> dict:
+    avg_home_y = match.get("home_avg_yellow", 1.8) or 1.8
+    avg_away_y = match.get("away_avg_yellow", 1.6) or 1.6
+    avg_red    = match.get("avg_red_cards", 0.15) or 0.15
+
+    result = {}
+    for t in [1.5, 2.5]:
+        p_over = 1 - sum(_poisson_pmf(k, avg_home_y) for k in range(int(t) + 1))
+        result[f"Card_H_O{t}"] = round(p_over, 4)
+        result[f"Card_H_U{t}"] = round(1 - p_over, 4)
+    for t in [1.5, 2.5]:
+        p_over = 1 - sum(_poisson_pmf(k, avg_away_y) for k in range(int(t) + 1))
+        result[f"Card_A_O{t}"] = round(p_over, 4)
+        result[f"Card_A_U{t}"] = round(1 - p_over, 4)
+    p_red_over = 1 - _poisson_pmf(0, avg_red)
+    result["Card_Red_O0.5"] = round(p_red_over, 4)
+    result["Card_Red_U0.5"] = round(1 - p_red_over, 4)
+    return result
+
+
+def compute_btts_and_result(matrix: list[list[float]]) -> dict:
+    btts_home = btts_draw = btts_away = 0.0
+    no_btts_home = no_btts_away = 0.0
+
+    for h in range(len(matrix)):
+        for a in range(len(matrix[0])):
+            p = matrix[h][a]
+            both_scored = h > 0 and a > 0
+            if both_scored:
+                if h > a:
+                    btts_home += p
+                elif h == a:
+                    btts_draw += p
+                else:
+                    btts_away += p
+            else:
+                if h > a:
+                    no_btts_home += p
+                elif h < a:
+                    no_btts_away += p
+
+    return {
+        "BTTS_yes_home": round(btts_home, 4),
+        "BTTS_yes_draw": round(btts_draw, 4),
+        "BTTS_yes_away": round(btts_away, 4),
+        "BTTS_no_home":  round(no_btts_home, 4),
+        "BTTS_no_away":  round(no_btts_away, 4),
+    }
+
+
+def compute_exact_goals(matrix: list[list[float]]) -> dict:
+    totals: dict[int, float] = {}
+    for h in range(len(matrix)):
+        for a in range(len(matrix[0])):
+            t = h + a
+            bucket = t if t <= 3 else 4
+            totals[bucket] = totals.get(bucket, 0.0) + matrix[h][a]
+    return {
+        "Goals_0": round(totals.get(0, 0.0), 4),
+        "Goals_1": round(totals.get(1, 0.0), 4),
+        "Goals_2": round(totals.get(2, 0.0), 4),
+        "Goals_3": round(totals.get(3, 0.0), 4),
+        "Goals_4plus": round(totals.get(4, 0.0), 4),
+    }
+
+
+def compute_over_under_asian(matrix: list[list[float]]) -> dict:
+    result = {}
+    for line in [2.25, 2.75, 3.25]:
+        low  = math.floor(line)
+        high = math.ceil(line)
+        p_over_low  = sum(matrix[h][a] for h in range(len(matrix))
+                          for a in range(len(matrix[0])) if h + a > low)
+        p_over_high = sum(matrix[h][a] for h in range(len(matrix))
+                          for a in range(len(matrix[0])) if h + a > high)
+        # Asian line: half-bet on each boundary
+        p_over = (p_over_low + p_over_high) / 2
+        result[f"AOU_O{line}"] = round(p_over, 4)
+        result[f"AOU_U{line}"] = round(1 - p_over, 4)
+    return result
+
+
 # --------------------------------------------------------------------------- #
 #  Confidence star rating                                                      #
 # --------------------------------------------------------------------------- #
@@ -473,6 +650,23 @@ def _claude_narrative(match: dict, pronostics: dict) -> str:
     if hasattr(date_str, "strftime"):
         date_str = date_str.strftime("%d/%m/%Y %H:%M")
 
+    fgt  = pronostics.get("first_goal_time", {})
+    bhg  = pronostics.get("both_halves_goal", {})
+    cbt  = pronostics.get("corners_by_team", {})
+    kbt  = pronostics.get("cards_by_team", {})
+    btr  = pronostics.get("btts_and_result", {})
+    wtn  = pronostics.get("win_to_nil", {})
+
+    # Best combined bet: pick highest-probability btts+result combo
+    _btr_labels = {
+        "BTTS_yes_home": "BTTS Oui + Dom.", "BTTS_yes_draw": "BTTS Oui + Nul",
+        "BTTS_yes_away": "BTTS Oui + Ext.", "BTTS_no_home": "BTTS Non + Dom.",
+        "BTTS_no_away":  "BTTS Non + Ext.",
+    }
+    best_combo = max(btr, key=btr.get) if btr else ""
+    best_combo_label = _btr_labels.get(best_combo, best_combo)
+    best_combo_prob  = btr.get(best_combo, 0.0)
+
     prompt = f"""Tu es un data scientist expert en modélisation de matchs de football et value betting.
 
 MATCH : {match['home_name']} vs {match['away_name']}
@@ -492,13 +686,22 @@ RÉSULTATS DES MODÈLES :
 - xG ajusté   : P1={p_xg.get('p1', 0):.1f}%    | PX={p_xg.get('px', 0):.1f}%     | P2={p_xg.get('p2', 0):.1f}%
 - FUSION FINALE (pondérée) : P1={_w('p1'):.1f}% | PX={_w('px'):.1f}% | P2={_w('p2'):.1f}%
 
+MARCHÉS ADDITIONNELS :
+- But avant 15 min : {fgt.get('FG_before_15', 0)*100:.1f}% | avant 30 min : {fgt.get('FG_before_30', 0)*100:.1f}% | avant 45 min : {fgt.get('FG_before_45', 0)*100:.1f}%
+- But dans les 2 mi-temps : {bhg.get('BHG_both', 0)*100:.1f}% (MT1={bhg.get('BHG_ht1', 0)*100:.1f}% / MT2={bhg.get('BHG_ht2', 0)*100:.1f}%)
+- Corners {match['home_name']} O5.5 : {cbt.get('Corn_H_O5.5', 0)*100:.1f}% | Corners {match['away_name']} O4.5 : {cbt.get('Corn_A_O4.5', 0)*100:.1f}%
+- Cartons {match['home_name']} O1.5 : {kbt.get('Card_H_O1.5', 0)*100:.1f}% | Cartons {match['away_name']} O1.5 : {kbt.get('Card_A_O1.5', 0)*100:.1f}%
+- Meilleur pari combiné : {best_combo_label} ({best_combo_prob*100:.1f}%)
+- Victoire sans encaisser : {match['home_name']}={wtn.get('WTN_home', 0)*100:.1f}% | {match['away_name']}={wtn.get('WTN_away', 0)*100:.1f}%
+
 ANALYSE REQUISE (sois concis et exploitable) :
 1. Convergence ou divergence des modèles ? Pourquoi ?
 2. Facteurs contextuels importants (domicile, forme, rang)
 3. Score exact le plus probable avec justification
-4. 2 paris sécurisés (confiance élevée)
-5. 1 pari à forte value si les modèles divergent des cotes standard
-6. Niveau de confiance global : Faible / Moyen / Élevé + justification
+4. Minute probable du premier but et signification tactique
+5. 2 paris sécurisés (confiance élevée) incluant éventuellement corners/cartons
+6. 1 meilleur pari combiné justifié mathématiquement
+7. Niveau de confiance global : Faible / Moyen / Élevé + justification
 
 CONTRAINTE : Raisonnement mathématique, concis, pas de phrases génériques.
 Si les stats sont 0.0 ou rang=99 : le dire explicitement et baisser le niveau de confiance à Faible."""
@@ -557,6 +760,16 @@ def compute_pronostics(match: dict, use_ai: bool = True) -> dict:
     halftime   = compute_halftime(lam_home, lam_away)
     clean      = compute_clean_sheet(matrix)
     odd_even   = compute_odd_even(matrix)
+    dnb        = compute_draw_no_bet(p1x2_final)
+    bhg        = compute_both_halves_goal(lam_home, lam_away)
+    fgt        = compute_first_goal_time(lam_home, lam_away)
+    wtn        = compute_win_to_nil(matrix)
+    htft       = compute_halftime_fulltime(lam_home, lam_away, matrix)
+    corn_team  = compute_corners_by_team(match)
+    card_team  = compute_cards_by_team(match)
+    btts_res   = compute_btts_and_result(matrix)
+    exact_goals = compute_exact_goals(matrix)
+    ou_asian   = compute_over_under_asian(matrix)
 
     best_1x2_label, best_1x2_prob = _best_1x2(p1x2_final)
     best_dc_label,  best_dc_prob  = _best_dc(dc)
@@ -594,6 +807,17 @@ def compute_pronostics(match: dict, use_ai: bool = True) -> dict:
             "stars": _stars(max(btts["BTTS_yes"], btts["BTTS_no"])),
         },
         "rec_score": {"label": exact[0]["score"] if exact else "N/A", "prob": exact[0]["prob"] if exact else 0},
+        # New markets
+        "draw_no_bet":      dnb,
+        "both_halves_goal": bhg,
+        "first_goal_time":  fgt,
+        "win_to_nil":       wtn,
+        "halftime_fulltime": htft,
+        "corners_by_team":  corn_team,
+        "cards_by_team":    card_team,
+        "btts_and_result":  btts_res,
+        "exact_goals":      exact_goals,
+        "over_under_asian": ou_asian,
     }
 
     if use_ai:

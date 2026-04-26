@@ -15,7 +15,7 @@ import os
 import sys
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=False)  # no-op if .env absent; never overrides secrets already in env
 
 logging.basicConfig(
     level=logging.INFO,

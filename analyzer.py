@@ -114,7 +114,7 @@ def normalize(raw: dict) -> dict | None:
     try:
         if source == "football-data":
             return _normalize_football_data(raw)
-        elif source == "api-football":
+        elif source in ("api-football", "sport-api"):
             return _normalize_api_football(raw)
         else:
             logger.warning("Unknown source: %s", source)

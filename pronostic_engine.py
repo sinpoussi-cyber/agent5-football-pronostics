@@ -11,8 +11,6 @@ import os
 import statistics
 from typing import Any
 
-import anthropic
-
 logger = logging.getLogger(__name__)
 
 # League-specific average goals (home, away) used when team stats are unavailable
@@ -631,6 +629,7 @@ def _h2h_summary(match: dict) -> str:
 
 
 def _claude_narrative(match: dict, pronostics: dict) -> str:
+    import anthropic
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         return "Analyse IA non disponible (clé manquante)."

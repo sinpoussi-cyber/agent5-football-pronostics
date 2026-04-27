@@ -3,7 +3,16 @@
     "allow": [
       "Bash(python -c \"import pronostic_engine; import report_generator; print\\('OK'\\)\")",
       "Bash(python -c ' *)",
-      "Bash(python -c \"import report_generator; import pronostic_engine; print\\('OK'\\)\")"
+      "Bash(python -c \"import report_generator; import pronostic_engine; print\\('OK'\\)\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh run *)",
+      "Bash(where gh *)",
+      "PowerShell(Get-Command *)",
+      "Bash(git remote *)",
+      "PowerShell($response = Invoke-RestMethod -Uri \"https://api.github.com/repos/sinpoussi-cyber/agent5-football-pronostics/actions/runs?status=failure&per_page=1\" -Headers @{\"User-Agent\"=\"claude-code\"; \"Accept\"=\"application/vnd.github+json\"} -ErrorAction Stop; $run = $response.workflow_runs[0]; \"ID: $\\($run.id\\) | Name: $\\($run.name\\) | Date: $\\($run.created_at\\) | Branch: $\\($run.head_branch\\) | Conclusion: $\\($run.conclusion\\)\")",
+      "PowerShell($token = $env:GITHUB_TOKEN; if \\($token\\) { \"Token found\" } else { \"No GITHUB_TOKEN in env\" })"
     ]
   }
 }

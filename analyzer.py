@@ -163,8 +163,10 @@ def normalize(raw: dict) -> dict | None:
     try:
         if source == "football-data":
             return _normalize_football_data(raw)
-        elif source in ("api-football", "sport-api"):
+        elif source == "api-football":
             return _normalize_api_football(raw)
+        elif source == "sport-api":
+            return _normalize_sport_api(raw)
         else:
             logger.warning("Unknown source: %s", source)
             return None
@@ -278,6 +280,60 @@ def _normalize_api_football(raw: dict) -> dict:
         "away_avg_corners":  away_corners_raw if away_corners_raw > 0 else _corn_a,
         "home_avg_yellow":   home_yellow_raw  if home_yellow_raw  > 0 else _yell_h,
         "away_avg_yellow":   away_yellow_raw  if away_yellow_raw  > 0 else _yell_a,
+    }
+
+
+def _normalize_sport_api(raw: dict) -> dict:
+    home_id   = raw["teams"]["home"]["id"]
+    away_id   = raw["teams"]["away"]["id"]
+    home_name = raw["teams"]["home"]["name"]
+    away_name = raw["teams"]["away"]["name"]
+
+    # Pre-computed dicts from fetcher_sport_api enrichment
+    home_form = raw.get("_home_form")   # {"avg_scored", "avg_conceded", "form"} or None
+    away_form = raw.get("_away_form")
+    h2h       = raw.get("_h2h") or []  # [{"home_score", "away_score"}]
+    st_home   = raw.get("_standings_home")  # {"position", "points", "goal_diff"} or None
+    st_away   = raw.get("_standings_away")
+
+    competition = raw.get("_competition_name", "")
+    _corn_h, _corn_a = _league_corners(competition)
+    _yell_h, _yell_a = _league_yellow(competition)
+
+    h2h_avg_goals = (
+        sum(m["home_score"] + m["away_score"] for m in h2h) / len(h2h)
+        if h2h else 0.0
+    )
+    h2h_btts_rate = (
+        sum(1 for m in h2h if m["home_score"] > 0 and m["away_score"] > 0) / len(h2h)
+        if h2h else 0.0
+    )
+
+    return {
+        "match_id":          raw.get("fixture", {}).get("id"),
+        "source":            "sport-api",
+        "competition":       competition,
+        "competition_code":  raw.get("_competition_code", ""),
+        "utc_date":          raw.get("fixture", {}).get("date", ""),
+        "home_id":           home_id,
+        "away_id":           away_id,
+        "home_name":         home_name,
+        "away_name":         away_name,
+        "home_rank":         st_home.get("position", 99) if st_home else 99,
+        "away_rank":         st_away.get("position", 99) if st_away else 99,
+        "home_form":         list(home_form["form"]) if home_form else [],
+        "away_form":         list(away_form["form"]) if away_form else [],
+        "home_avg_scored":   home_form.get("avg_scored")   if home_form else None,
+        "home_avg_conceded": home_form.get("avg_conceded") if home_form else None,
+        "away_avg_scored":   away_form.get("avg_scored")   if away_form else None,
+        "away_avg_conceded": away_form.get("avg_conceded") if away_form else None,
+        "h2h_matches":       h2h,
+        "h2h_avg_goals":     h2h_avg_goals,
+        "h2h_btts_rate":     h2h_btts_rate,
+        "home_avg_corners":  _corn_h,
+        "away_avg_corners":  _corn_a,
+        "home_avg_yellow":   _yell_h,
+        "away_avg_yellow":   _yell_a,
     }
 
 

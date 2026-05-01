@@ -39,6 +39,16 @@ def _league_defaults(competition: str) -> tuple[float, float]:
     return _DEFAULT_GOALS
 
 
+def _xg_usable(match: dict) -> bool:
+    """xG model requires real per-team goal stats and at least one real league rank."""
+    has_stats = all(
+        match.get(k) is not None
+        for k in ("home_avg_scored", "home_avg_conceded", "away_avg_scored", "away_avg_conceded")
+    )
+    has_any_rank = match.get("home_rank", 99) != 99 or match.get("away_rank", 99) != 99
+    return has_stats and has_any_rank
+
+
 # --------------------------------------------------------------------------- #
 #  Poisson helpers                                                             #
 # --------------------------------------------------------------------------- #
@@ -64,8 +74,8 @@ def _expected_goals(match: dict) -> tuple[float, float]:
 
     league_home_avg, league_away_avg = _league_defaults(match.get("competition", ""))
 
-    def _or_league(val: float, league_val: float) -> float:
-        return league_val if val == 0.0 else val
+    def _or_league(val, league_val: float) -> float:
+        return league_val if (val is None or val == 0.0) else val
 
     home_att = max(_or_league(match["home_avg_scored"],   league_home_avg), 0.5)
     home_def = max(_or_league(match["home_avg_conceded"], league_away_avg), 0.5)
@@ -226,9 +236,17 @@ def _model_xg_adjusted(match: dict) -> dict:
 #  Ensemble fusion                                                              #
 # --------------------------------------------------------------------------- #
 
-def _ensemble_fusion(p_poisson: dict, p_dixon: dict, p_elo: dict, p_xg: dict) -> dict:
-    """Combine the 4 models via arithmetic mean, median, and weighted average."""
-    weights = {"dixon": 0.35, "poisson": 0.25, "xg": 0.25, "elo": 0.15}
+def _ensemble_fusion(p_poisson: dict, p_dixon: dict, p_elo: dict,
+                     p_xg: dict | None = None) -> dict:
+    """Combine models via arithmetic mean, median, and weighted average.
+
+    When p_xg is None (data insufficient), its 25% is split equally between
+    Dixon-Coles (+12.5%) and Poisson (+12.5%): dixon=0.475, poisson=0.375, elo=0.15.
+    """
+    if p_xg is not None:
+        weights = {"dixon": 0.35, "poisson": 0.25, "xg": 0.25, "elo": 0.15}
+    else:
+        weights = {"dixon": 0.475, "poisson": 0.375, "elo": 0.15}
 
     results = {}
     for outcome in ("p1", "px", "p2"):
@@ -236,16 +254,13 @@ def _ensemble_fusion(p_poisson: dict, p_dixon: dict, p_elo: dict, p_xg: dict) ->
             "poisson": p_poisson[outcome],
             "dixon":   p_dixon[outcome],
             "elo":     p_elo[outcome],
-            "xg":      p_xg[outcome],
         }
-        mean_val = statistics.mean(vals.values())
-        median_val = statistics.median(vals.values())
-        weighted_val = (
-            vals["dixon"]   * weights["dixon"]
-            + vals["poisson"] * weights["poisson"]
-            + vals["xg"]      * weights["xg"]
-            + vals["elo"]     * weights["elo"]
-        )
+        if p_xg is not None:
+            vals["xg"] = p_xg[outcome]
+
+        mean_val     = statistics.mean(vals.values())
+        median_val   = statistics.median(vals.values())
+        weighted_val = sum(vals[m] * weights[m] for m in vals)
         results[outcome] = {
             "mean":     round(mean_val, 2),
             "median":   round(median_val, 2),
@@ -253,7 +268,6 @@ def _ensemble_fusion(p_poisson: dict, p_dixon: dict, p_elo: dict, p_xg: dict) ->
             "by_model": {k: round(v, 2) for k, v in vals.items()},
         }
 
-    # Renormalize weighted so sum = 100
     w_total = sum(results[o]["weighted"] for o in ("p1", "px", "p2"))
     if w_total > 0:
         for o in ("p1", "px", "p2"):
@@ -628,7 +642,8 @@ def _h2h_summary(match: dict) -> str:
     return f"Moy. buts={avg:.1f} | BTTS={rate:.0%}"
 
 
-def _claude_narrative(match: dict, pronostics: dict) -> str:
+def _claude_narrative(match: dict, pronostics: dict,
+                      excluded_models: list[str] | None = None) -> str:
     import anthropic
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -666,6 +681,24 @@ def _claude_narrative(match: dict, pronostics: dict) -> str:
     best_combo_label = _btr_labels.get(best_combo, best_combo)
     best_combo_prob  = btr.get(best_combo, 0.0)
 
+    # Safe formatting for stats that may be None
+    def _fs(val) -> str:
+        return f"{val:.1f}" if val is not None else "N/D"
+
+    # xG row: omit if model was excluded
+    p_xg_safe = p_xg if isinstance(p_xg, dict) else {}
+    xg_row = (
+        f"- xG ajusté   : P1={p_xg_safe.get('p1', 0):.1f}%    | PX={p_xg_safe.get('px', 0):.1f}%     | P2={p_xg_safe.get('p2', 0):.1f}%"
+        if p_xg_safe
+        else "- xG ajusté   : EXCLU (données insuffisantes — poids redistribués sur Poisson et Dixon-Coles)"
+    )
+
+    exclusion_note = (
+        f"\n⚠️ MODÈLES EXCLUS DU CALCUL : {', '.join(excluded_models)} — données insuffisantes. "
+        "Mentionner explicitement dans l'analyse et forcer niveau de confiance = Faible."
+        if excluded_models else ""
+    )
+
     prompt = f"""Tu es un data scientist expert en modélisation de matchs de football et value betting.
 
 MATCH : {match['home_name']} vs {match['away_name']}
@@ -673,8 +706,8 @@ COMPÉTITION : {match['competition']}
 DATE : {date_str}
 
 DONNÉES DISPONIBLES :
-- Forme domicile ({match['home_name']}) : {_format_form(match['home_form'])} | Moy. buts marqués : {match['home_avg_scored']:.1f} | Moy. buts encaissés : {match['home_avg_conceded']:.1f}
-- Forme extérieur ({match['away_name']}) : {_format_form(match['away_form'])} | Moy. buts marqués : {match['away_avg_scored']:.1f} | Moy. buts encaissés : {match['away_avg_conceded']:.1f}
+- Forme domicile ({match['home_name']}) : {_format_form(match['home_form'])} | Moy. buts marqués : {_fs(match['home_avg_scored'])} | Moy. buts encaissés : {_fs(match['home_avg_conceded'])}
+- Forme extérieur ({match['away_name']}) : {_format_form(match['away_form'])} | Moy. buts marqués : {_fs(match['away_avg_scored'])} | Moy. buts encaissés : {_fs(match['away_avg_conceded'])}
 - Rang domicile : {match['home_rank']} | Rang extérieur : {match['away_rank']}
 - H2H (5 derniers) : {_h2h_summary(match)}
 
@@ -682,7 +715,7 @@ RÉSULTATS DES MODÈLES :
 - Poisson     : P1={p_poisson.get('p1', 0):.1f}% | PX={p_poisson.get('px', 0):.1f}% | P2={p_poisson.get('p2', 0):.1f}%
 - Dixon-Coles : P1={p_dixon.get('p1', 0):.1f}%  | PX={p_dixon.get('px', 0):.1f}%  | P2={p_dixon.get('p2', 0):.1f}%
 - Elo         : P1={p_elo.get('p1', 0):.1f}%    | PX={p_elo.get('px', 0):.1f}%    | P2={p_elo.get('p2', 0):.1f}%
-- xG ajusté   : P1={p_xg.get('p1', 0):.1f}%    | PX={p_xg.get('px', 0):.1f}%     | P2={p_xg.get('p2', 0):.1f}%
+{xg_row}
 - FUSION FINALE (pondérée) : P1={_w('p1'):.1f}% | PX={_w('px'):.1f}% | P2={_w('p2'):.1f}%
 
 MARCHÉS ADDITIONNELS :
@@ -703,7 +736,7 @@ ANALYSE REQUISE (sois concis et exploitable) :
 7. Niveau de confiance global : Faible / Moyen / Élevé + justification
 
 CONTRAINTE : Raisonnement mathématique, concis, pas de phrases génériques.
-Si les stats sont 0.0 ou rang=99 : le dire explicitement et baisser le niveau de confiance à Faible."""
+Si les stats sont N/D ou rang=99 : le dire explicitement et baisser le niveau de confiance à Faible.{exclusion_note}"""
 
     try:
         message = client.messages.create(
@@ -730,13 +763,19 @@ Si les stats sont 0.0 ou rang=99 : le dire explicitement et baisser le niveau de
 def compute_pronostics(match: dict, use_ai: bool = True) -> dict:
     lam_home, lam_away = _expected_goals(match)
 
-    # Run all 4 models
+    # Run base models — xG excluded when team stats are None or both ranks are 99
     m_poisson = _model_poisson(lam_home, lam_away)
     m_dixon   = _model_dixon_coles(lam_home, lam_away)
     m_elo     = _model_elo(match)
-    m_xg      = _model_xg_adjusted(match)
 
-    # Ensemble fusion
+    excluded_models: list[str] = []
+    if _xg_usable(match):
+        m_xg = _model_xg_adjusted(match)
+    else:
+        m_xg = None
+        excluded_models.append("xG")
+
+    # Ensemble fusion (redistributes xG weight when model is absent)
     ensemble = _ensemble_fusion(m_poisson, m_dixon, m_elo, m_xg)
 
     # Use Dixon-Coles matrix as primary for downstream markets (most accurate)
@@ -819,8 +858,9 @@ def compute_pronostics(match: dict, use_ai: bool = True) -> dict:
         "over_under_asian": ou_asian,
     }
 
+    pronostics["excluded_models"] = excluded_models
     if use_ai:
-        pronostics["ai_narrative"] = _claude_narrative(match, pronostics)
+        pronostics["ai_narrative"] = _claude_narrative(match, pronostics, excluded_models)
     else:
         pronostics["ai_narrative"] = ""
 

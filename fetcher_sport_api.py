@@ -111,9 +111,10 @@ def _normalize(event: dict) -> dict:
         },
         # League / competition
         "league": {
-            "id":     unique_tournament.get("id") or tournament.get("id"),
-            "name":   competition_name,
-            "season": event.get("season", {}).get("year"),
+            "id":        unique_tournament.get("id") or tournament.get("id"),
+            "name":      competition_name,
+            "season":    event.get("season", {}).get("year"),
+            "season_id": event.get("season", {}).get("id"),
         },
         # Source metadata (mirrors api-football convention)
         "_competition_name": competition_name,
@@ -125,18 +126,131 @@ def _normalize(event: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+#  Convert SofaScore event format → api-football-compatible dict               #
+# --------------------------------------------------------------------------- #
+
+def _to_af_format(event: dict) -> dict:
+    """Normalize a SofaScore event to the api-football structure expected by analyzer."""
+    home = event.get("homeTeam", {})
+    away = event.get("awayTeam", {})
+    return {
+        "teams": {
+            "home": {"id": home.get("id"), "name": home.get("name", "")},
+            "away": {"id": away.get("id"), "name": away.get("name", "")},
+        },
+        "goals": {
+            "home": event.get("homeScore", {}).get("current"),
+            "away": event.get("awayScore", {}).get("current"),
+        },
+    }
+
+
+# --------------------------------------------------------------------------- #
+#  Enrichment — form, standings, H2H                                           #
+# --------------------------------------------------------------------------- #
+
+def get_team_form(team_id: int, last_n: int = 5) -> list[dict] | None:
+    """
+    Fetch last `last_n` finished events for a team.
+    Returns api-football-compatible dicts, or None if data is unavailable.
+    """
+    data = _get(f"/team/{team_id}/events/last/0")
+    if data is None:
+        return None
+    events = data.get("events", [])
+    if not events:
+        return None
+    finished = [
+        _to_af_format(e)
+        for e in events
+        if e.get("status", {}).get("type") == "finished"
+        and e.get("homeScore", {}).get("current") is not None
+        and e.get("awayScore", {}).get("current") is not None
+    ]
+    return finished[-last_n:] if finished else None
+
+
+def get_standings(tournament_id: int, season_id: int) -> list[dict] | None:
+    """
+    Fetch standings for a tournament/season.
+    Returns rows with 'rank' key (mapped from SofaScore 'position'), or None.
+    """
+    data = _get(f"/tournament/{tournament_id}/season/{season_id}/standings/total")
+    if data is None:
+        return None
+    standings_list = data.get("standings", [])
+    if not standings_list:
+        return None
+    rows = standings_list[0].get("rows", [])
+    if not rows:
+        return None
+    return [
+        {
+            "team":           {"id": row.get("team", {}).get("id")},
+            "rank":           row.get("position", 99),
+            "points":         row.get("points", 0),
+            "goalDifference": row.get("goalDifference", 0),
+        }
+        for row in rows
+    ]
+
+
+def get_h2h(event_id: int, last_n: int = 5) -> list[dict] | None:
+    """
+    Fetch H2H matches for a given event.
+    Returns api-football-compatible dicts, or None if data is unavailable.
+    """
+    data = _get(f"/event/{event_id}/h2h")
+    if data is None:
+        return None
+    # SofaScore may return H2H under 'events' or 'previousEvents'
+    events = data.get("events") or data.get("previousEvents", [])
+    if not events:
+        return None
+    finished = [
+        _to_af_format(e)
+        for e in events
+        if e.get("status", {}).get("type") == "finished"
+        and e.get("homeScore", {}).get("current") is not None
+        and e.get("awayScore", {}).get("current") is not None
+    ]
+    return finished[-last_n:] if finished else None
+
+
+def _enrich(normalized: dict) -> dict:
+    """Attach form, standings, and H2H to a normalized event dict in-place."""
+    home_id       = normalized["teams"]["home"]["id"]
+    away_id       = normalized["teams"]["away"]["id"]
+    event_id      = normalized["fixture"]["id"]
+    tournament_id = normalized["league"]["id"]
+    season_id     = normalized["league"].get("season_id")
+
+    normalized["_home_form"] = get_team_form(home_id)
+    normalized["_away_form"] = get_team_form(away_id)
+    normalized["_h2h"]       = get_h2h(event_id)
+    normalized["_standings"] = (
+        get_standings(tournament_id, season_id)
+        if tournament_id and season_id
+        else None
+    )
+    return normalized
+
+
+# --------------------------------------------------------------------------- #
 #  Public interface (mirrors fetcher_api_football)                             #
 # --------------------------------------------------------------------------- #
 
 def fetch_all_enriched() -> list[dict]:
-    """Fetch and normalize today's not-started football matches."""
+    """Fetch, normalize, and enrich today's not-started football matches."""
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     events = get_scheduled_events(today)
     enriched = []
     for e in events:
         try:
-            enriched.append(_normalize(e))
+            normalized = _normalize(e)
+            normalized = _enrich(normalized)
+            enriched.append(normalized)
         except Exception as exc:
-            logger.error("Error normalizing event %s: %s", e.get("id"), exc)
+            logger.error("Error processing event %s: %s", e.get("id"), exc)
     logger.info("sport-api: %d enriched fixtures returned", len(enriched))
     return enriched

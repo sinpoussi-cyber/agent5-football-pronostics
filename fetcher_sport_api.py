@@ -134,8 +134,10 @@ def get_team_form(team_id: int, last_n: int = 5) -> dict | None:
     """
     Fetch last `last_n` finished matches for `team_id`.
 
-    Returns {"avg_scored": float, "avg_conceded": float, "form": "WDLWW"}
+    Returns {"avg_scored": float, "avg_conceded": float, "form": "WDLWW",
+             "avg_corners": float|None}
     from the team's perspective, or None if data is unavailable.
+    avg_corners is None when corner data is absent from the event payload.
     """
     data = _get(f"/team/{team_id}/events/previous/0")
     if data is None:
@@ -152,9 +154,10 @@ def get_team_form(team_id: int, last_n: int = 5) -> dict | None:
         return None
 
     recent = finished[-last_n:]
-    scored_list: list[int] = []
-    conceded_list: list[int] = []
+    scored_list: list[float] = []
+    conceded_list: list[float] = []
     form_chars: list[str] = []
+    corners_list: list[float] = []
 
     for e in recent:
         is_home = e.get("homeTeam", {}).get("id") == team_id
@@ -172,10 +175,17 @@ def get_team_form(team_id: int, last_n: int = 5) -> dict | None:
         else:
             form_chars.append("L")
 
+        # sport-api (SofaScore) exposes corner counts in the score objects
+        h_corners = e.get("homeScore", {}).get("corner")
+        a_corners = e.get("awayScore", {}).get("corner")
+        if h_corners is not None and a_corners is not None:
+            corners_list.append(float(h_corners if is_home else a_corners))
+
     return {
         "avg_scored":   round(sum(scored_list) / len(scored_list), 2),
         "avg_conceded": round(sum(conceded_list) / len(conceded_list), 2),
         "form":         "".join(form_chars),
+        "avg_corners":  round(sum(corners_list) / len(corners_list), 2) if corners_list else None,
     }
 
 

@@ -322,6 +322,20 @@ def _normalize_sport_api(raw: dict) -> dict:
         if h2h else 0.0
     )
 
+    # Use real corners when sport-api returned homeScore.corner/awayScore.corner
+    # per match; fall back to league defaults when absent.
+    home_avg_corners = (
+        home_form["avg_corners"]
+        if home_form and home_form.get("avg_corners") is not None
+        else _corn_h
+    )
+    away_avg_corners = (
+        away_form["avg_corners"]
+        if away_form and away_form.get("avg_corners") is not None
+        else _corn_a
+    )
+    # Yellow cards are not exposed in sport-api event payloads; keep league defaults.
+
     return {
         "match_id":          raw.get("fixture", {}).get("id"),
         "source":            "sport-api",
@@ -343,8 +357,8 @@ def _normalize_sport_api(raw: dict) -> dict:
         "h2h_matches":       h2h,
         "h2h_avg_goals":     h2h_avg_goals,
         "h2h_btts_rate":     h2h_btts_rate,
-        "home_avg_corners":  _corn_h,
-        "away_avg_corners":  _corn_a,
+        "home_avg_corners":  home_avg_corners,
+        "away_avg_corners":  away_avg_corners,
         "home_avg_yellow":   _yell_h,
         "away_avg_yellow":   _yell_a,
     }

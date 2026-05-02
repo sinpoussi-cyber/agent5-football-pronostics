@@ -46,25 +46,38 @@ def _form_results(matches: list[dict], team_id: int, source: str) -> list[str]:
     return results
 
 
-def _avg_goals(matches: list[dict], source: str, side: str = "both") -> float:
-    """Average goals per match. side: 'home'|'away'|'both'."""
+def _avg_goals(matches: list[dict], source: str,
+               team_id: int | None = None, stat: str = "scored") -> float:
+    """
+    Average goals per match.
+      team_id=None            → total goals (home + away), used for H2H averages.
+      team_id set, stat="scored"   → goals scored by team_id across its form matches.
+      team_id set, stat="conceded" → goals conceded by team_id across its form matches.
+
+    For each match we detect whether team_id was home or away in that specific
+    fixture before choosing the right score column, fixing the previous bug where
+    side="home" always took the home-team score regardless of which side team_id
+    actually played on.
+    """
     totals = []
     for m in matches:
         if source == "football-data":
-            score = m.get("score", {}).get("fullTime", {})
-            h_g = _safe(score.get("home"))
-            a_g = _safe(score.get("away"))
-        else:
-            score = m.get("goals", {})
-            h_g = _safe(score.get("home"))
-            a_g = _safe(score.get("away"))
+            score   = m.get("score", {}).get("fullTime", {})
+            h_g     = _safe(score.get("home"))
+            a_g     = _safe(score.get("away"))
+            is_home = m.get("homeTeam", {}).get("id") == team_id
+        else:  # api-football
+            score   = m.get("goals", {})
+            h_g     = _safe(score.get("home"))
+            a_g     = _safe(score.get("away"))
+            is_home = m.get("teams", {}).get("home", {}).get("id") == team_id
 
-        if side == "home":
-            totals.append(h_g)
-        elif side == "away":
-            totals.append(a_g)
-        else:
+        if team_id is None:
             totals.append(h_g + a_g)
+        elif stat == "scored":
+            totals.append(h_g if is_home else a_g)
+        else:  # conceded
+            totals.append(a_g if is_home else h_g)
     return sum(totals) / len(totals) if totals else 0.0
 
 
@@ -205,14 +218,14 @@ def _normalize_football_data(raw: dict) -> dict:
         # Form
         "home_form":        _form_results(home_form, home_id, source),
         "away_form":        _form_results(away_form, away_id, source),
-        # Goals averages
-        "home_avg_scored":  _avg_goals(home_form, source, "home"),
-        "home_avg_conceded":_avg_goals(home_form, source, "away"),
-        "away_avg_scored":  _avg_goals(away_form, source, "away"),
-        "away_avg_conceded":_avg_goals(away_form, source, "home"),
+        # Goals averages — team_id-aware, correct regardless of home/away side played
+        "home_avg_scored":  _avg_goals(home_form, source, home_id, "scored"),
+        "home_avg_conceded":_avg_goals(home_form, source, home_id, "conceded"),
+        "away_avg_scored":  _avg_goals(away_form, source, away_id, "scored"),
+        "away_avg_conceded":_avg_goals(away_form, source, away_id, "conceded"),
         # H2H
         "h2h_matches":      h2h,
-        "h2h_avg_goals":    _avg_goals(h2h, source, "both"),
+        "h2h_avg_goals":    _avg_goals(h2h, source),
         "h2h_btts_rate":    _btts_rate(h2h, source),
         # Extended: football-data free tier has no match stats — use league defaults
         "home_avg_corners": _league_corners(raw.get("_competition_name", ""))[0],
@@ -266,14 +279,14 @@ def _normalize_api_football(raw: dict) -> dict:
         # Form — empty list when data unavailable
         "home_form":         _form_results(_hf, home_id, source) if _hf else [],
         "away_form":         _form_results(_af, away_id, source) if _af else [],
-        # Goals averages — None signals "data unavailable" to the engine
-        "home_avg_scored":   _avg_goals(_hf, source, "home") if isinstance(home_form, list) else None,
-        "home_avg_conceded": _avg_goals(_hf, source, "away") if isinstance(home_form, list) else None,
-        "away_avg_scored":   _avg_goals(_af, source, "away") if isinstance(away_form, list) else None,
-        "away_avg_conceded": _avg_goals(_af, source, "home") if isinstance(away_form, list) else None,
+        # Goals averages — team_id-aware, correct regardless of home/away side played
+        "home_avg_scored":   _avg_goals(_hf, source, home_id, "scored")   if isinstance(home_form, list) else None,
+        "home_avg_conceded": _avg_goals(_hf, source, home_id, "conceded") if isinstance(home_form, list) else None,
+        "away_avg_scored":   _avg_goals(_af, source, away_id, "scored")   if isinstance(away_form, list) else None,
+        "away_avg_conceded": _avg_goals(_af, source, away_id, "conceded") if isinstance(away_form, list) else None,
         # H2H
         "h2h_matches":       h2h,
-        "h2h_avg_goals":     _avg_goals(h2h, source, "both"),
+        "h2h_avg_goals":     _avg_goals(h2h, source),
         "h2h_btts_rate":     _btts_rate(h2h, source),
         # Corners & cards: real stats if available, else league defaults (never 0.0)
         "home_avg_corners":  home_corners_raw if home_corners_raw > 0 else _corn_h,

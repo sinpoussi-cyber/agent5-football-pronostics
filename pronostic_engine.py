@@ -30,6 +30,45 @@ _DEFAULT_GOALS = (1.35, 1.10)
 
 DIXON_COLES_RHO = -0.13
 
+# Ligues majeures éligibles à l'analyse IA Claude
+_MAJOR_LEAGUES_AI: tuple[str, ...] = (
+    "premier league",
+    "ligue 1",
+    "laliga",
+    "bundesliga",
+    "serie a",
+    "eredivisie",
+    "champions league",
+    "championship",
+)
+
+# Seuil de convergence (écart-type P1 entre modèles) — au-delà : trop de divergence
+_AI_MAX_P1_STDEV = 10.0
+
+
+def _is_major_league_for_ai(competition: str) -> bool:
+    key = (competition or "").lower()
+    return any(name in key for name in _MAJOR_LEAGUES_AI)
+
+
+def _ensemble_p1_stdev(ensemble: dict) -> float:
+    """Écart-type des probabilités P1 entre modèles (en points de pourcentage)."""
+    by_model = ensemble.get("p1", {}).get("by_model", {})
+    vals = list(by_model.values())
+    if len(vals) < 2:
+        return 0.0
+    return statistics.stdev(vals)
+
+
+def _should_use_ai(match: dict, ensemble: dict) -> tuple[bool, str]:
+    """Filtre matchs éligibles à Claude : ligue majeure ET convergence >= Moyenne."""
+    if not _is_major_league_for_ai(match.get("competition", "")):
+        return False, "ligue non-majeure"
+    sigma = _ensemble_p1_stdev(ensemble)
+    if sigma >= _AI_MAX_P1_STDEV:
+        return False, f"divergence trop forte (σ P1={sigma:.1f}pp)"
+    return True, ""
+
 
 def _league_defaults(competition: str) -> tuple[float, float]:
     key = competition.lower()
@@ -859,10 +898,18 @@ def compute_pronostics(match: dict, use_ai: bool = True) -> dict:
     }
 
     pronostics["excluded_models"] = excluded_models
-    if use_ai:
+
+    ai_ok, ai_skip_reason = _should_use_ai(match, ensemble)
+    if use_ai and ai_ok:
         pronostics["ai_narrative"] = _claude_narrative(match, pronostics, excluded_models)
     else:
         pronostics["ai_narrative"] = ""
+        if use_ai and not ai_ok:
+            logger.info(
+                "Claude AI ignoré pour %s vs %s (%s) — %s",
+                match.get("home_name", "?"), match.get("away_name", "?"),
+                match.get("competition", "?"), ai_skip_reason,
+            )
 
     return pronostics
 

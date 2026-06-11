@@ -429,39 +429,86 @@ def _render_match_card(entry: dict) -> str:
   <!-- Ensemble model comparison -->
   {_render_ensemble_section(p)}
 
-  <!-- AI narrative -->
-  {"" if not narrative else f'''
-  <div style="margin:0 16px 16px;padding:12px;background:#eafaf1;border-left:4px solid #1a6b3c;border-radius:4px;font-size:13px;color:#2c3e50;">
-    <div style="font-weight:bold;margin-bottom:4px;">🤖 Analyse IA</div>
-    {narrative.replace(chr(10), "<br>")}
-  </div>'''}
+  <!-- AI narratives (multi-providers) -->
+  {_render_ai_narratives(p)}
 </div>
 """
+
+
+# --------------------------------------------------------------------------- #
+#  Multi-AI narratives section                                                 #
+# --------------------------------------------------------------------------- #
+
+_AI_STYLES = {
+    "Claude":   ("#eafaf1", "#1a6b3c", "🤖"),
+    "Gemini":   ("#eef3fd", "#3b6fd4", "✨"),
+    "DeepSeek": ("#f3eefd", "#6c3bd4", "🐋"),
+}
+
+
+def _render_ai_narratives(p: dict) -> str:
+    narratives: dict = p.get("ai_narratives") or {}
+    # Rétro-compatibilité : ancien champ unique
+    if not narratives and p.get("ai_narrative"):
+        narratives = {"Claude": p["ai_narrative"]}
+    if not narratives:
+        return ""
+
+    blocks = ""
+    for provider, text in narratives.items():
+        bg, border, icon = _AI_STYLES.get(provider, ("#f4f6f8", "#7f8c8d", "🤖"))
+        blocks += f'''
+  <div style="margin:0 16px 12px;padding:12px;background:{bg};border-left:4px solid {border};border-radius:4px;font-size:13px;color:#2c3e50;">
+    <div style="font-weight:bold;margin-bottom:4px;">{icon} Analyse {provider}</div>
+    {(text or "").replace(chr(10), "<br>")}
+  </div>'''
+    return blocks
 
 
 # --------------------------------------------------------------------------- #
 #  Full report                                                                 #
 # --------------------------------------------------------------------------- #
 
+def _group_label(group_code: str) -> str:
+    """'GROUP_A' → 'Groupe A'."""
+    if not group_code:
+        return "Groupe inconnu"
+    return group_code.replace("GROUP_", "Groupe ").replace("_", " ").title().replace("Groupe ", "Groupe ")
+
+
 def generate_html_report(results: list[dict], report_type: str = "quotidien") -> str:
     now = datetime.now(timezone.utc)
     date_str = now.strftime("%d/%m/%Y")
     nb_matches = len(results)
 
-    # Group by competition
+    is_world_cup = report_type == "coupe-du-monde"
+
+    # Group by competition — or by World Cup group (A → L) in CDM mode
     by_competition: dict[str, list[dict]] = defaultdict(list)
     for entry in results:
-        comp = entry["match"].get("competition", "Autre")
-        by_competition[comp].append(entry)
+        if is_world_cup:
+            key = _group_label(entry["match"].get("group", ""))
+        else:
+            key = entry["match"].get("competition", "Autre")
+        by_competition[key].append(entry)
 
     competition_sections = ""
     for comp, entries in sorted(by_competition.items()):
+        # Tri chronologique des matchs au sein de chaque section
+        entries = sorted(entries, key=lambda e: e["match"].get("utc_date", ""))
         cards = "".join(_render_match_card(e) for e in entries)
         competition_sections += f"""
 <div style="margin-bottom:32px;">
   <h2 style="color:#1a6b3c;border-bottom:2px solid #1a6b3c;padding-bottom:6px;">{comp}</h2>
   {cards}
 </div>"""
+
+    if is_world_cup:
+        report_title = "🏆 Coupe du Monde 2026 — Phase de groupes"
+        report_label = "Analyse complète de la phase de groupes (multi-IA : Claude · Gemini · DeepSeek)"
+    else:
+        report_title = "🎯 Pronostics Football"
+        report_label = f"Rapport {report_type}"
 
     html = f"""<!DOCTYPE html>
 <html lang="fr">
@@ -474,9 +521,9 @@ def generate_html_report(results: list[dict], report_type: str = "quotidien") ->
   <!-- Header -->
   <div style="background:linear-gradient(135deg,#1a6b3c 0%,#27ae60 100%);color:#fff;padding:32px;text-align:center;">
     <div style="font-size:14px;letter-spacing:2px;text-transform:uppercase;opacity:.8;">Agent 5 Football Pronostics</div>
-    <div style="font-size:32px;font-weight:bold;margin:8px 0;">🎯 Pronostics Football</div>
+    <div style="font-size:32px;font-weight:bold;margin:8px 0;">{report_title}</div>
     <div style="font-size:18px;">{date_str} — {nb_matches} match{"s" if nb_matches > 1 else ""} analysé{"s" if nb_matches > 1 else ""}</div>
-    <div style="font-size:13px;margin-top:8px;opacity:.75;">Rapport {report_type}</div>
+    <div style="font-size:13px;margin-top:8px;opacity:.75;">{report_label}</div>
   </div>
 
   <!-- Body -->
@@ -495,7 +542,7 @@ def generate_html_report(results: list[dict], report_type: str = "quotidien") ->
       Jouez de manière responsable et ne misez jamais plus que ce que vous pouvez vous permettre de perdre.
       En cas de problème avec le jeu, contactez <a href="https://www.joueurs-info-service.fr" style="color:#3498db;">Joueurs Info Service</a> au 09 74 75 13 13.
     </div>
-    <div style="margin-top:12px;color:#7f8c8d;">Généré le {now.strftime("%d/%m/%Y à %H:%M")} UTC par Claude Sonnet</div>
+    <div style="margin-top:12px;color:#7f8c8d;">Généré le {now.strftime("%d/%m/%Y à %H:%M")} UTC — Analyses IA : Claude · Gemini · DeepSeek</div>
   </div>
 
 </body>
@@ -503,6 +550,9 @@ def generate_html_report(results: list[dict], report_type: str = "quotidien") ->
     return html
 
 
-def generate_subject(nb_matches: int) -> str:
+def generate_subject(nb_matches: int, report_type: str = "quotidien") -> str:
     date_str = datetime.now(timezone.utc).strftime("%d/%m/%Y")
+    if report_type == "coupe-du-monde":
+        return (f"🏆 Coupe du Monde 2026 — Pronostics phase de groupes — "
+                f"{nb_matches} matchs analysés ({date_str})")
     return f"🎯 Pronostics Football — {date_str} — {nb_matches} match{'s' if nb_matches > 1 else ''} analysé{'s' if nb_matches > 1 else ''}"

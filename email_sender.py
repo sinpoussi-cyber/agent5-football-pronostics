@@ -3,10 +3,13 @@ import os
 import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 
 logger = logging.getLogger(__name__)
 
-def send_report(subject: str, html_body: str) -> bool:
+def send_report(subject: str, html_body: str,
+                attachment_html: str | None = None,
+                attachment_name: str = "rapport_complet.html") -> bool:
     sender      = os.environ.get("REPORT_EMAIL_FROM", "")
     recipient   = os.environ.get("REPORT_EMAIL_TO", "")
     smtp_server = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
@@ -18,11 +21,23 @@ def send_report(subject: str, html_body: str) -> bool:
         logger.error("Missing SMTP credentials (REPORT_EMAIL_FROM, REPORT_EMAIL_TO, SMTP_PASSWORD)")
         return False
 
-    msg = MIMEMultipart("alternative")
+    if attachment_html:
+        msg = MIMEMultipart("mixed")
+        alt = MIMEMultipart("alternative")
+        alt.attach(MIMEText(html_body, "html"))
+        msg.attach(alt)
+        part = MIMEApplication(attachment_html.encode("utf-8"), _subtype="html")
+        part.add_header("Content-Disposition", "attachment", filename=attachment_name)
+        msg.attach(part)
+        logger.info("Pièce jointe ajoutée : %s (%.0f Ko)",
+                    attachment_name, len(attachment_html) / 1024)
+    else:
+        msg = MIMEMultipart("alternative")
+        msg.attach(MIMEText(html_body, "html"))
+
     msg["Subject"] = subject
     msg["From"]    = sender
     msg["To"]      = recipient
-    msg.attach(MIMEText(html_body, "html"))
 
     try:
         logger.info(f"Connexion SMTP à {smtp_server}:{port} depuis {sender}")

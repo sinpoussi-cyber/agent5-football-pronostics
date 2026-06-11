@@ -208,6 +208,7 @@ def _normalize_football_data(raw: dict) -> dict:
         "source":           source,
         "competition":      raw.get("_competition_name", ""),
         "competition_code": raw.get("_competition_code", ""),
+        "group":            raw.get("group", ""),   # ex. "GROUP_A" (Coupe du Monde)
         "utc_date":         raw.get("utcDate", ""),
         "home_id":          home_id,
         "away_id":          away_id,

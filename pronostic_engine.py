@@ -40,6 +40,8 @@ _MAJOR_LEAGUES_AI: tuple[str, ...] = (
     "eredivisie",
     "champions league",
     "championship",
+    "coupe du monde",
+    "world cup",
 )
 
 # Seuil de convergence (écart-type P1 entre modèles) — au-delà : trop de divergence
@@ -76,6 +78,23 @@ def _league_defaults(competition: str) -> tuple[float, float]:
         if name in key:
             return vals
     return _DEFAULT_GOALS
+
+
+# Pays hôtes Coupe du Monde 2026 — seuls cas où l'avantage domicile s'applique
+_WC_HOSTS = ("mexico", "mexique", "canada", "united states", "usa", "états-unis")
+
+
+def _is_world_cup(competition: str) -> bool:
+    key = (competition or "").lower()
+    return "coupe du monde" in key or "world cup" in key
+
+
+def _home_advantage(match: dict) -> float:
+    """1.10 en championnat ; en CDM : terrain neutre (1.0) sauf pays hôte à domicile."""
+    if not _is_world_cup(match.get("competition", "")):
+        return 1.10
+    home = (match.get("home_name", "") or "").lower()
+    return 1.08 if any(h in home for h in _WC_HOSTS) else 1.0
 
 
 def _xg_usable(match: dict) -> bool:
@@ -121,7 +140,7 @@ def _expected_goals(match: dict) -> tuple[float, float]:
     away_att = max(_or_league(match["away_avg_scored"],   league_away_avg), 0.5)
     away_def = max(_or_league(match["away_avg_conceded"], league_home_avg), 0.5)
 
-    home_advantage = 1.10
+    home_advantage = _home_advantage(match)
 
     lam_home = home_att * away_def / league_avg * home_advantage
     lam_away = away_att * home_def / league_avg / home_advantage
@@ -255,7 +274,7 @@ def _model_xg_adjusted(match: dict) -> dict:
     home_def = max(match.get("home_avg_conceded", league_away_avg) or league_away_avg, 0.5)
     away_def = max(match.get("away_avg_conceded", league_home_avg) or league_home_avg, 0.5)
 
-    home_advantage = 1.10
+    home_advantage = _home_advantage(match)
     lam_home = xg_home * away_def / league_avg * home_advantage
     lam_away = xg_away * home_def / league_avg / home_advantage
 
@@ -681,15 +700,9 @@ def _h2h_summary(match: dict) -> str:
     return f"Moy. buts={avg:.1f} | BTTS={rate:.0%}"
 
 
-def _claude_narrative(match: dict, pronostics: dict,
-                      excluded_models: list[str] | None = None) -> str:
-    import anthropic
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return "Analyse IA non disponible (clé manquante)."
-
-    client = anthropic.Anthropic(api_key=api_key)
-
+def _build_ai_prompt(match: dict, pronostics: dict,
+                     excluded_models: list[str] | None = None) -> str:
+    """Construit le prompt d'analyse partagé par tous les providers IA."""
     ensemble = pronostics.get("ensemble", {})
     p_poisson = pronostics.get("model_poisson", {})
     p_dixon   = pronostics.get("model_dixon", {})
@@ -777,29 +790,26 @@ ANALYSE REQUISE (sois concis et exploitable) :
 CONTRAINTE : Raisonnement mathématique, concis, pas de phrases génériques.
 Si les stats sont N/D ou rang=99 : le dire explicitement et baisser le niveau de confiance à Faible.{exclusion_note}"""
 
-    try:
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return message.content[0].text
-    except anthropic.BadRequestError as e:
-        if "credit balance too low" in str(e).lower():
-            logger.warning("Anthropic credits insufficient: %s", e)
-            return "Analyse IA indisponible (crédits insuffisants)"
-        logger.error("Claude API error: %s", e)
-        return f"Analyse IA indisponible : {e}"
-    except Exception as e:
-        logger.error("Claude API error: %s", e)
-        return f"Analyse IA indisponible : {e}"
+    return prompt
+
+
+def _multi_ai_narratives(match: dict, pronostics: dict,
+                         excluded_models: list[str] | None = None) -> dict[str, str]:
+    """Envoie le prompt aux providers configurés (Claude, Gemini, DeepSeek)."""
+    from ai_providers import get_multi_ai_narratives
+    prompt = _build_ai_prompt(match, pronostics, excluded_models)
+    narratives = get_multi_ai_narratives(prompt)
+    if not narratives:
+        return {"Info": "Analyse IA non disponible (aucune clé API configurée)."}
+    return narratives
 
 
 # --------------------------------------------------------------------------- #
 #  Main engine entry point                                                     #
 # --------------------------------------------------------------------------- #
 
-def compute_pronostics(match: dict, use_ai: bool = True) -> dict:
+def compute_pronostics(match: dict, use_ai: bool = True,
+                       force_ai: bool = False) -> dict:
     lam_home, lam_away = _expected_goals(match)
 
     # Run base models — xG excluded when team stats are None or both ranks are 99
@@ -900,13 +910,20 @@ def compute_pronostics(match: dict, use_ai: bool = True) -> dict:
     pronostics["excluded_models"] = excluded_models
 
     ai_ok, ai_skip_reason = _should_use_ai(match, ensemble)
+    if force_ai:
+        ai_ok, ai_skip_reason = True, ""
     if use_ai and ai_ok:
-        pronostics["ai_narrative"] = _claude_narrative(match, pronostics, excluded_models)
+        narratives = _multi_ai_narratives(match, pronostics, excluded_models)
+        pronostics["ai_narratives"] = narratives
+        # Rétro-compatibilité : ai_narrative = analyse Claude si dispo, sinon 1re dispo
+        pronostics["ai_narrative"] = narratives.get(
+            "Claude", next(iter(narratives.values()), ""))
     else:
+        pronostics["ai_narratives"] = {}
         pronostics["ai_narrative"] = ""
         if use_ai and not ai_ok:
             logger.info(
-                "Claude AI ignoré pour %s vs %s (%s) — %s",
+                "Analyse IA ignorée pour %s vs %s (%s) — %s",
                 match.get("home_name", "?"), match.get("away_name", "?"),
                 match.get("competition", "?"), ai_skip_reason,
             )
@@ -914,11 +931,12 @@ def compute_pronostics(match: dict, use_ai: bool = True) -> dict:
     return pronostics
 
 
-def run_engine(matches: list[dict], use_ai: bool = True) -> list[dict]:
+def run_engine(matches: list[dict], use_ai: bool = True,
+               force_ai: bool = False) -> list[dict]:
     results = []
     for match in matches:
         try:
-            prono = compute_pronostics(match, use_ai=use_ai)
+            prono = compute_pronostics(match, use_ai=use_ai, force_ai=force_ai)
             results.append({"match": match, "pronostics": prono})
             logger.info("Pronostic computed: %s vs %s", match["home_name"], match["away_name"])
         except Exception as e:

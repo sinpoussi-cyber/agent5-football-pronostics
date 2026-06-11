@@ -2,11 +2,14 @@
 Agent 5 Football Pronostics — point d'entrée principal.
 
 Usage:
-    python main.py                  # rapport quotidien (24h à venir)
-    python main.py --type avant     # matchs du jour (9h)
-    python main.py --type hebdo     # rapport hebdomadaire (lundi)
-    python main.py --no-ai          # désactive l'analyse Claude
-    python main.py --dry-run        # génère le rapport sans envoyer l'email
+    python main.py                          # rapport quotidien (24h à venir)
+    python main.py --type avant             # matchs du jour (9h)
+    python main.py --type hebdo             # rapport hebdomadaire (lundi)
+    python main.py --type coupe-du-monde    # TOUTE la phase de groupes CDM 2026 (72 matchs)
+    python main.py --type coupe-du-monde --fast   # idem, sans enrichissement forme/H2H (~20x plus rapide)
+    python main.py --type coupe-du-monde --include-played  # inclut aussi les matchs déjà joués
+    python main.py --no-ai                  # désactive les analyses IA (Claude/Gemini/DeepSeek)
+    python main.py --dry-run                # génère le rapport sans envoyer l'email
 """
 
 import argparse
@@ -26,6 +29,7 @@ logger = logging.getLogger("agent5")
 
 import fetcher_football_data as fbd
 import fetcher_sport_api     as faf
+import fetcher_world_cup     as fwc
 from analyzer         import analyze_matches
 from pronostic_engine import run_engine
 from report_generator import generate_html_report, generate_subject
@@ -35,38 +39,61 @@ from email_sender     import send_report
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agent 5 Football Pronostics")
     parser.add_argument("--type",    default="quotidien",
-                        choices=["quotidien", "avant", "hebdo"],
+                        choices=["quotidien", "avant", "hebdo", "coupe-du-monde"],
                         help="Type de rapport")
     parser.add_argument("--no-ai",  action="store_true",
-                        help="Désactiver l'analyse Claude AI")
+                        help="Désactiver les analyses IA (Claude/Gemini/DeepSeek)")
+    parser.add_argument("--fast",   action="store_true",
+                        help="(CDM) Sauter l'enrichissement forme/H2H — collecte ~2 min au lieu de ~25 min")
+    parser.add_argument("--include-played", action="store_true",
+                        help="(CDM) Inclure aussi les matchs déjà joués ou en cours")
     parser.add_argument("--dry-run", action="store_true",
                         help="Ne pas envoyer l'email, sauvegarder en HTML")
     args = parser.parse_args()
 
     use_ai = not args.no_ai
     report_type = args.type
+    is_world_cup = report_type == "coupe-du-monde"
 
     logger.info("=== Agent 5 Football Pronostics démarré (type=%s, ai=%s) ===",
                 report_type, use_ai)
 
+    if use_ai:
+        from ai_providers import available_providers
+        providers = available_providers()
+        logger.info("Providers IA configurés : %s",
+                    ", ".join(providers) if providers else "AUCUN (clés manquantes)")
+
     # ------------------------------------------------------------------ #
     #  1. Collecte des données                                            #
     # ------------------------------------------------------------------ #
-    logger.info("Fetching data from football-data.org …")
-    raw_fbd = []
-    try:
-        raw_fbd = fbd.fetch_all_enriched()
-    except Exception as e:
-        logger.error("football-data fetch failed: %s", e)
+    if is_world_cup:
+        logger.info("Mode Coupe du Monde 2026 — phase de groupes complète …")
+        all_raw = []
+        try:
+            all_raw = fwc.fetch_all_enriched(
+                with_form=not args.fast,
+                only_upcoming=not args.include_played,
+            )
+        except Exception as e:
+            logger.error("Coupe du Monde fetch failed: %s", e)
+    else:
+        logger.info("Fetching data from football-data.org …")
+        raw_fbd = []
+        try:
+            raw_fbd = fbd.fetch_all_enriched()
+        except Exception as e:
+            logger.error("football-data fetch failed: %s", e)
 
-    logger.info("Fetching data from SportAPI …")
-    raw_faf = []
-    try:
-        raw_faf = faf.fetch_all_enriched()
-    except Exception as e:
-        logger.error("sport-api fetch failed: %s", e)
+        logger.info("Fetching data from SportAPI …")
+        raw_faf = []
+        try:
+            raw_faf = faf.fetch_all_enriched()
+        except Exception as e:
+            logger.error("sport-api fetch failed: %s", e)
 
-    all_raw = raw_fbd + raw_faf
+        all_raw = raw_fbd + raw_faf
+
     logger.info("Total raw matches collected: %d", len(all_raw))
 
     if not all_raw:
@@ -84,15 +111,16 @@ def main() -> None:
     #  3. Calcul des pronostics                                           #
     # ------------------------------------------------------------------ #
     logger.info("Computing pronostics (AI=%s) …", use_ai)
-    results = run_engine(matches, use_ai=use_ai)
+    # En mode CDM, l'analyse IA est forcée sur TOUS les matchs
+    results = run_engine(matches, use_ai=use_ai, force_ai=is_world_cup)
     logger.info("Pronostics computed: %d", len(results))
 
     # ------------------------------------------------------------------ #
     #  4. Génération du rapport HTML                                      #
     # ------------------------------------------------------------------ #
     logger.info("Generating HTML report …")
-    html   = generate_html_report(results, report_type=report_type)
-    subject = generate_subject(len(results))
+    html    = generate_html_report(results, report_type=report_type)
+    subject = generate_subject(len(results), report_type=report_type)
 
     # ------------------------------------------------------------------ #
     #  5. Envoi ou sauvegarde                                             #
@@ -104,7 +132,12 @@ def main() -> None:
         logger.info("Dry-run: rapport sauvegardé dans %s", output_file)
     else:
         logger.info("Sending email: %s", subject)
-        ok = send_report(subject, html)
+        # CDM : rapport volumineux (72 matchs) → joint aussi en pièce jointe,
+        # car Gmail tronque les corps d'email > ~102 Ko
+        attachment = html if is_world_cup else None
+        ok = send_report(subject, html,
+                         attachment_html=attachment,
+                         attachment_name="pronostics_cdm2026_phase_de_groupes.html")
         if ok:
             logger.info("Email envoyé avec succès.")
         else:

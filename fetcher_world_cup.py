@@ -1,12 +1,6 @@
 """
 Fetcher Coupe du Monde 2026 — phase de groupes complète (72 matchs).
-
-S'appuie sur football-data.org (compétition WC), comme fetcher_football_data,
-mais récupère TOUS les matchs de la phase de groupes en une fois
-(stage=GROUP_STAGE), quel que soit le statut (SCHEDULED, TIMED).
-
-Le classement est extrait par groupe (Groupe A → L) pour produire un rang
-1–4 intra-groupe utilisé par le modèle Elo.
+Seuls les matchs non joués (SCHEDULED ou TIMED) sont retournés.
 """
 
 from __future__ import annotations
@@ -26,7 +20,7 @@ GROUP_STAGE_TO   = "2026-06-28"
 
 
 # --------------------------------------------------------------------------- #
-#  Matchs de la phase de groupes                                               #
+#  Matchs de la phase de groupes (uniquement non joués)                        #
 # --------------------------------------------------------------------------- #
 
 def get_group_stage_matches(date_from: str = GROUP_STAGE_FROM,
@@ -46,34 +40,52 @@ def get_group_stage_matches(date_from: str = GROUP_STAGE_FROM,
         return []
 
     matches = []
-    skipped = 0
+    skipped_finished = 0
+    skipped_other = 0
+    
     for m in data.get("matches", []):
         status = m.get("status", "")
-        if only_upcoming and status not in ("SCHEDULED", "TIMED"):
-            skipped += 1
-            continue
+        
+        # Statuts possibles selon football-data.org:
+        # SCHEDULED, TIMED → match à venir
+        # IN_PLAY, PAUSED, LIVE → match en cours
+        # FINISHED → match terminé
+        
+        if only_upcoming:
+            if status in ("FINISHED", "IN_PLAY", "PAUSED", "LIVE"):
+                skipped_finished += 1
+                logger.debug("Match ignoré (déjà joué ou en cours): %s vs %s (%s)", 
+                             m.get("homeTeam", {}).get("name"),
+                             m.get("awayTeam", {}).get("name"),
+                             status)
+                continue
+            if status not in ("SCHEDULED", "TIMED"):
+                skipped_other += 1
+                continue
         
         # Ajouter les métadonnées
         m["_competition_name"] = WC_NAME
         m["_competition_code"] = WC_CODE
         m["_source"] = "football-data"
         
-        # Extraire le groupe (ex: "GROUP_A")
+        # Extraire le groupe
         group = m.get("group", "")
         if not group:
-            # Alternative : déduire depuis le nom du groupe dans le match
             group = m.get("stage", "")
         m["group"] = group
         
+        # Ajouter le statut pour vérification
+        m["_match_status"] = status
+        
         matches.append(m)
 
-    logger.info("Coupe du Monde : %d matchs de poules récupérés (%d ignorés)",
-                len(matches), skipped)
+    logger.info("Coupe du Monde : %d matchs à venir récupérés (%d matchs déjà joués ignorés, %d autres ignorés)",
+                len(matches), skipped_finished, skipped_other)
     return matches
 
 
 # --------------------------------------------------------------------------- #
-#  Classements par groupe → rang 1-4 intra-groupe                              #
+#  Classements par groupe                                                      #
 # --------------------------------------------------------------------------- #
 
 _group_rank_maps: dict[str, dict[int, int]] = {}
@@ -131,7 +143,6 @@ def enrich_match(match: dict, with_form: bool = True) -> dict:
     home_rank = get_team_rank_in_group(home_id, group)
     away_rank = get_team_rank_in_group(away_id, group)
 
-    # Tableau synthétique compatible avec l'analyzer
     match["_standings"] = [
         {"team": {"id": home_id}, "position": home_rank},
         {"team": {"id": away_id}, "position": away_rank},
@@ -154,16 +165,19 @@ def enrich_match(match: dict, with_form: bool = True) -> dict:
 def fetch_all_enriched(with_form: bool = True,
                        only_upcoming: bool = True) -> list[dict]:
     """
-    Récupère et enrichit tous les matchs de la phase de groupes.
+    Récupère et enrichit tous les matchs de la phase de groupes NON ENCORE JOUÉS.
     with_form=False : mode rapide
+    only_upcoming=True : ignore les matchs déjà joués
     """
     matches = get_group_stage_matches(only_upcoming=only_upcoming)
     if not matches:
+        logger.warning("Aucun match à venir trouvé pour la Coupe du Monde")
         return []
 
     if with_form:
         est_minutes = round(len(matches) * 3 * 6 / 60)
-        logger.info("Enrichissement complet activé : ~%d min de collecte", est_minutes)
+        logger.info("Enrichissement complet activé : ~%d min de collecte pour %d matchs", 
+                    est_minutes, len(matches))
 
     enriched = []
     for i, m in enumerate(matches, 1):
@@ -174,5 +188,20 @@ def fetch_all_enriched(with_form: bool = True,
         except Exception as e:
             logger.error("Erreur enrichissement match %s : %s", m.get("id"), e)
 
-    logger.info("Coupe du Monde : %d matchs enrichis", len(enriched))
+    logger.info("Coupe du Monde : %d matchs à venir enrichis", len(enriched))
     return enriched
+
+
+# --------------------------------------------------------------------------- #
+#  Fonction utilitaire pour vérifier si un match est joué                      #
+# --------------------------------------------------------------------------- #
+
+def is_match_played(match: dict) -> bool:
+    """Retourne True si le match est déjà joué ou en cours."""
+    status = match.get("status", "")
+    return status in ("FINISHED", "IN_PLAY", "PAUSED", "LIVE")
+
+
+def filter_upcoming_matches(matches: list[dict]) -> list[dict]:
+    """Filtre une liste de matchs pour ne garder que ceux non joués."""
+    return [m for m in matches if not is_match_played(m)]

@@ -1,7 +1,9 @@
 """
 Pronostic Engine — ensemble multi-model betting recommendations.
 Models: Poisson, Dixon-Coles, Elo, xG-adjusted.
-Claude AI enriches each pronostic with a narrative analysis.
+
+Les probabilités sont calculées UNIQUEMENT à partir des modèles statistiques
+et des données de forme, rangs, H2H. AUCUNE cote bookmaker n'est utilisée.
 """
 
 from __future__ import annotations
@@ -25,12 +27,14 @@ _LEAGUE_DEFAULTS: dict[str, tuple[float, float]] = {
     "championship":     (1.4, 1.1),
     "eredivisie":       (1.6, 1.3),
     "champions league": (1.5, 1.2),
+    "coupe du monde":   (1.4, 1.1),
+    "world cup":        (1.4, 1.1),
 }
 _DEFAULT_GOALS = (1.35, 1.10)
 
 DIXON_COLES_RHO = -0.13
 
-# Ligues majeures éligibles à l'analyse IA Claude
+# Ligues majeures éligibles à l'analyse IA
 _MAJOR_LEAGUES_AI: tuple[str, ...] = (
     "premier league",
     "ligue 1",
@@ -63,7 +67,7 @@ def _ensemble_p1_stdev(ensemble: dict) -> float:
 
 
 def _should_use_ai(match: dict, ensemble: dict) -> tuple[bool, str]:
-    """Filtre matchs éligibles à Claude : ligue majeure ET convergence >= Moyenne."""
+    """Filtre matchs éligibles à l'IA : ligue majeure ET convergence >= Moyenne."""
     if not _is_major_league_for_ai(match.get("competition", "")):
         return False, "ligue non-majeure"
     sigma = _ensemble_p1_stdev(ensemble)
@@ -98,10 +102,24 @@ def _home_advantage(match: dict) -> float:
 
 
 def _xg_usable(match: dict) -> bool:
-    """xG model requires real per-team goal stats and at least one real league rank."""
+    """
+    Le modèle xG est utilisable uniquement si les équipes ont des statistiques
+    réelles de buts marqués/encaissés (>0). Si toutes les moyennes sont à 0,
+    c'est que les données sont absentes (forme N/A).
+    """
+    home_scored = match.get("home_avg_scored")
+    home_conceded = match.get("home_avg_conceded")
+    away_scored = match.get("away_avg_scored")
+    away_conceded = match.get("away_avg_conceded")
+    
+    # Si toutes les valeurs sont None ou 0 → données absentes
+    all_missing = all(v in (None, 0) for v in [home_scored, home_conceded, away_scored, away_conceded])
+    if all_missing:
+        return False
+    
     has_stats = all(
-        match.get(k) is not None
-        for k in ("home_avg_scored", "home_avg_conceded", "away_avg_scored", "away_avg_conceded")
+        v is not None and v > 0
+        for v in [home_scored, home_conceded, away_scored, away_conceded]
     )
     has_any_rank = match.get("home_rank", 99) != 99 or match.get("away_rank", 99) != 99
     return has_stats and has_any_rank
@@ -135,10 +153,10 @@ def _expected_goals(match: dict) -> tuple[float, float]:
     def _or_league(val, league_val: float) -> float:
         return league_val if (val is None or val == 0.0) else val
 
-    home_att = max(_or_league(match["home_avg_scored"],   league_home_avg), 0.5)
-    home_def = max(_or_league(match["home_avg_conceded"], league_away_avg), 0.5)
-    away_att = max(_or_league(match["away_avg_scored"],   league_away_avg), 0.5)
-    away_def = max(_or_league(match["away_avg_conceded"], league_home_avg), 0.5)
+    home_att = max(_or_league(match.get("home_avg_scored", 0), league_home_avg), 0.5)
+    home_def = max(_or_league(match.get("home_avg_conceded", 0), league_away_avg), 0.5)
+    away_att = max(_or_league(match.get("away_avg_scored", 0), league_away_avg), 0.5)
+    away_def = max(_or_league(match.get("away_avg_conceded", 0), league_home_avg), 0.5)
 
     home_advantage = _home_advantage(match)
 
@@ -262,17 +280,29 @@ def _model_xg_adjusted(match: dict) -> dict:
 
     home_scored = match.get("home_avg_scored", 0.0) or 0.0
     away_scored = match.get("away_avg_scored", 0.0) or 0.0
+    
+    # Si les données sont absentes (0.0), utiliser les moyennes de ligue
+    if home_scored == 0:
+        home_scored = league_home_avg
+    if away_scored == 0:
+        away_scored = league_away_avg
 
     xg_home = home_scored * 0.95 + league_home_avg * 0.05
     xg_away = away_scored * 0.95 + league_away_avg * 0.05
 
-    xg_home = max(xg_home, 0.3)
-    xg_away = max(xg_away, 0.3)
+    xg_home = max(xg_home, 0.5)
+    xg_away = max(xg_away, 0.5)
 
-    # Apply defensive adjustment (same logic as base model)
+    # Apply defensive adjustment
     league_avg = 1.35
     home_def = max(match.get("home_avg_conceded", league_away_avg) or league_away_avg, 0.5)
     away_def = max(match.get("away_avg_conceded", league_home_avg) or league_home_avg, 0.5)
+    
+    # Si les défenses sont à 0 (données absentes), utiliser les moyennes de ligue
+    if home_def == 0:
+        home_def = league_away_avg
+    if away_def == 0:
+        away_def = league_home_avg
 
     home_advantage = _home_advantage(match)
     lam_home = xg_home * away_def / league_avg * home_advantage
@@ -318,7 +348,7 @@ def _ensemble_fusion(p_poisson: dict, p_dixon: dict, p_elo: dict,
 
         mean_val     = statistics.mean(vals.values())
         median_val   = statistics.median(vals.values())
-        weighted_val = sum(vals[m] * weights[m] for m in vals)
+        weighted_val = sum(vals[m] * weights[m] for m in vals if m in weights)
         results[outcome] = {
             "mean":     round(mean_val, 2),
             "median":   round(median_val, 2),
@@ -327,7 +357,7 @@ def _ensemble_fusion(p_poisson: dict, p_dixon: dict, p_elo: dict,
         }
 
     w_total = sum(results[o]["weighted"] for o in ("p1", "px", "p2"))
-    if w_total > 0:
+    if w_total > 0 and w_total != 100:
         for o in ("p1", "px", "p2"):
             results[o]["weighted"] = round(results[o]["weighted"] / w_total * 100, 2)
 
@@ -532,8 +562,6 @@ def compute_halftime_fulltime(lam_home: float, lam_away: float,
     lam_a_ht = lam_away * 0.45
     ht_matrix = _score_matrix(lam_h_ht, lam_a_ht, max_goals=4)
 
-    # P(HT outcome) * P(FT outcome | HT) — approximated as independent
-    # ht_matrix for halftime probs, ft_matrix for full-time probs
     ht_1x2 = compute_1x2(ht_matrix)
     ft_1x2 = compute_1x2(ft_matrix)
 
@@ -561,7 +589,7 @@ def compute_corners_by_team(match: dict) -> dict:
         p_over = 1 - sum(_poisson_pmf(k, avg_away) for k in range(int(t) + 1))
         result[f"Corn_A_O{t}"] = round(p_over, 4)
         result[f"Corn_A_U{t}"] = round(1 - p_over, 4)
-    # Handicap corners domicile -1.5 (home corners - away corners > 1.5)
+    # Handicap corners domicile -1.5
     p_hc = sum(
         _poisson_pmf(h, avg_home) * _poisson_pmf(a, avg_away)
         for h in range(15)
@@ -647,7 +675,6 @@ def compute_over_under_asian(matrix: list[list[float]]) -> dict:
                           for a in range(len(matrix[0])) if h + a > low)
         p_over_high = sum(matrix[h][a] for h in range(len(matrix))
                           for a in range(len(matrix[0])) if h + a > high)
-        # Asian line: half-bet on each boundary
         p_over = (p_over_low + p_over_high) / 2
         result[f"AOU_O{line}"] = round(p_over, 4)
         result[f"AOU_U{line}"] = round(1 - p_over, 4)
@@ -655,7 +682,7 @@ def compute_over_under_asian(matrix: list[list[float]]) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-#  Confidence star rating                                                      #
+#  Confidence star rating (basé UNIQUEMENT sur la probabilité modèle)         #
 # --------------------------------------------------------------------------- #
 
 def _stars(prob: float) -> str:
@@ -685,7 +712,7 @@ def _best_ou(p: dict, prefix: str = "O") -> tuple[str, float]:
 
 
 # --------------------------------------------------------------------------- #
-#  Claude AI narrative                                                         #
+#  Claude AI narrative (prompt uniquement, pas de cotes)                       #
 # --------------------------------------------------------------------------- #
 
 def _format_form(form: list) -> str:
@@ -702,7 +729,8 @@ def _h2h_summary(match: dict) -> str:
 
 def _build_ai_prompt(match: dict, pronostics: dict,
                      excluded_models: list[str] | None = None) -> str:
-    """Construit le prompt d'analyse partagé par tous les providers IA."""
+    """Construit le prompt d'analyse partagé par tous les providers IA.
+    Aucune cote bookmaker n'est incluse."""
     ensemble = pronostics.get("ensemble", {})
     p_poisson = pronostics.get("model_poisson", {})
     p_dixon   = pronostics.get("model_dixon", {})
@@ -712,9 +740,7 @@ def _build_ai_prompt(match: dict, pronostics: dict,
     def _w(outcome: str) -> float:
         return ensemble.get(outcome, {}).get("weighted", 0.0)
 
-    date_str = match.get("date", "N/A")
-    if hasattr(date_str, "strftime"):
-        date_str = date_str.strftime("%d/%m/%Y %H:%M")
+    date_str = match.get("date_formatted", match.get("utc_date", "N/A"))
 
     fgt  = pronostics.get("first_goal_time", {})
     bhg  = pronostics.get("both_halves_goal", {})
@@ -733,11 +759,9 @@ def _build_ai_prompt(match: dict, pronostics: dict,
     best_combo_label = _btr_labels.get(best_combo, best_combo)
     best_combo_prob  = btr.get(best_combo, 0.0)
 
-    # Safe formatting for stats that may be None
     def _fs(val) -> str:
         return f"{val:.1f}" if val is not None else "N/D"
 
-    # xG row: omit if model was excluded
     p_xg_safe = p_xg if isinstance(p_xg, dict) else {}
     xg_row = (
         f"- xG ajusté   : P1={p_xg_safe.get('p1', 0):.1f}%    | PX={p_xg_safe.get('px', 0):.1f}%     | P2={p_xg_safe.get('p2', 0):.1f}%"
@@ -751,7 +775,7 @@ def _build_ai_prompt(match: dict, pronostics: dict,
         if excluded_models else ""
     )
 
-    prompt = f"""Tu es un data scientist expert en modélisation de matchs de football et value betting.
+    prompt = f"""Tu es un data scientist expert en modélisation de matchs de football.
 
 MATCH : {match['home_name']} vs {match['away_name']}
 COMPÉTITION : {match['competition']}
@@ -763,27 +787,27 @@ DONNÉES DISPONIBLES :
 - Rang domicile : {match['home_rank']} | Rang extérieur : {match['away_rank']}
 - H2H (5 derniers) : {_h2h_summary(match)}
 
-RÉSULTATS DES MODÈLES :
+RÉSULTATS DES MODÈLES STATISTIQUES (probabilités en %) :
 - Poisson     : P1={p_poisson.get('p1', 0):.1f}% | PX={p_poisson.get('px', 0):.1f}% | P2={p_poisson.get('p2', 0):.1f}%
 - Dixon-Coles : P1={p_dixon.get('p1', 0):.1f}%  | PX={p_dixon.get('px', 0):.1f}%  | P2={p_dixon.get('p2', 0):.1f}%
 - Elo         : P1={p_elo.get('p1', 0):.1f}%    | PX={p_elo.get('px', 0):.1f}%    | P2={p_elo.get('p2', 0):.1f}%
 {xg_row}
 - FUSION FINALE (pondérée) : P1={_w('p1'):.1f}% | PX={_w('px'):.1f}% | P2={_w('p2'):.1f}%
 
-MARCHÉS ADDITIONNELS :
+MARCHÉS ADDITIONNELS (probabilités modèle) :
 - But avant 15 min : {fgt.get('FG_before_15', 0)*100:.1f}% | avant 30 min : {fgt.get('FG_before_30', 0)*100:.1f}% | avant 45 min : {fgt.get('FG_before_45', 0)*100:.1f}%
 - But dans les 2 mi-temps : {bhg.get('BHG_both', 0)*100:.1f}% (MT1={bhg.get('BHG_ht1', 0)*100:.1f}% / MT2={bhg.get('BHG_ht2', 0)*100:.1f}%)
 - Corners {match['home_name']} O5.5 : {cbt.get('Corn_H_O5.5', 0)*100:.1f}% | Corners {match['away_name']} O4.5 : {cbt.get('Corn_A_O4.5', 0)*100:.1f}%
 - Cartons {match['home_name']} O1.5 : {kbt.get('Card_H_O1.5', 0)*100:.1f}% | Cartons {match['away_name']} O1.5 : {kbt.get('Card_A_O1.5', 0)*100:.1f}%
-- Meilleur pari combiné : {best_combo_label} ({best_combo_prob*100:.1f}%)
+- Meilleur pari combiné (modèle) : {best_combo_label} ({best_combo_prob*100:.1f}%)
 - Victoire sans encaisser : {match['home_name']}={wtn.get('WTN_home', 0)*100:.1f}% | {match['away_name']}={wtn.get('WTN_away', 0)*100:.1f}%
 
-ANALYSE REQUISE (sois concis et exploitable) :
+ANALYSE REQUISE (sois concis et exploitable, basé uniquement sur les modèles ci-dessus) :
 1. Convergence ou divergence des modèles ? Pourquoi ?
 2. Facteurs contextuels importants (domicile, forme, rang)
 3. Score exact le plus probable avec justification
 4. Minute probable du premier but et signification tactique
-5. 2 paris sécurisés (confiance élevée) incluant éventuellement corners/cartons
+5. 2 paris à forte probabilité (confiance élevée) basés sur les modèles
 6. 1 meilleur pari combiné justifié mathématiquement
 7. Niveau de confiance global : Faible / Moyen / Élevé + justification
 
@@ -812,7 +836,7 @@ def compute_pronostics(match: dict, use_ai: bool = True,
                        force_ai: bool = False) -> dict:
     lam_home, lam_away = _expected_goals(match)
 
-    # Run base models — xG excluded when team stats are None or both ranks are 99
+    # Run base models
     m_poisson = _model_poisson(lam_home, lam_away)
     m_dixon   = _model_dixon_coles(lam_home, lam_away)
     m_elo     = _model_elo(match)
@@ -865,13 +889,11 @@ def compute_pronostics(match: dict, use_ai: bool = True,
     pronostics = {
         "lam_home":    lam_home,
         "lam_away":    lam_away,
-        # Individual models
         "model_poisson": m_poisson,
         "model_dixon":   m_dixon,
         "model_elo":     m_elo,
         "model_xg":      m_xg,
         "ensemble":      ensemble,
-        # Final merged 1X2 (weighted ensemble)
         "p1x2":        p1x2_final,
         "double_chance": dc,
         "over_under":  ou,
@@ -884,7 +906,6 @@ def compute_pronostics(match: dict, use_ai: bool = True,
         "halftime":    halftime,
         "clean_sheet": clean,
         "odd_even":    odd_even,
-        # Recommendations
         "rec_1x2":  {"label": best_1x2_label, "prob": best_1x2_prob, "stars": _stars(best_1x2_prob)},
         "rec_dc":   {"label": best_dc_label,  "prob": best_dc_prob,  "stars": _stars(best_dc_prob)},
         "rec_ou":   {"label": best_ou_label,  "prob": best_ou_prob,  "stars": _stars(best_ou_prob)},
@@ -894,7 +915,6 @@ def compute_pronostics(match: dict, use_ai: bool = True,
             "stars": _stars(max(btts["BTTS_yes"], btts["BTTS_no"])),
         },
         "rec_score": {"label": exact[0]["score"] if exact else "N/A", "prob": exact[0]["prob"] if exact else 0},
-        # New markets
         "draw_no_bet":      dnb,
         "both_halves_goal": bhg,
         "first_goal_time":  fgt,
@@ -905,9 +925,8 @@ def compute_pronostics(match: dict, use_ai: bool = True,
         "btts_and_result":  btts_res,
         "exact_goals":      exact_goals,
         "over_under_asian": ou_asian,
+        "excluded_models":  excluded_models,
     }
-
-    pronostics["excluded_models"] = excluded_models
 
     ai_ok, ai_skip_reason = _should_use_ai(match, ensemble)
     if force_ai:
@@ -915,7 +934,6 @@ def compute_pronostics(match: dict, use_ai: bool = True,
     if use_ai and ai_ok:
         narratives = _multi_ai_narratives(match, pronostics, excluded_models)
         pronostics["ai_narratives"] = narratives
-        # Rétro-compatibilité : ai_narrative = analyse Claude si dispo, sinon 1re dispo
         pronostics["ai_narrative"] = narratives.get(
             "Claude", next(iter(narratives.values()), ""))
     else:

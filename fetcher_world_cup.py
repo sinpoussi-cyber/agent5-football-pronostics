@@ -17,6 +17,7 @@ saute l'enrichissement par équipe et utilise les moyennes H2H/ligue.
 from __future__ import annotations
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 import fetcher_football_data as fbd
 
@@ -60,6 +61,14 @@ def get_group_stage_matches(date_from: str = GROUP_STAGE_FROM,
         m["_competition_name"] = WC_NAME
         m["_competition_code"] = WC_CODE
         m["_source"] = "football-data"
+        
+        # Extraire le groupe (ex: "GROUP_A") depuis le stage du match
+        group = m.get("group", "")
+        if not group:
+            # Alternative : déduire depuis le nom du groupe dans le match
+            group = m.get("stage", "")
+        m["group"] = group
+        
         matches.append(m)
 
     logger.info("Coupe du Monde : %d matchs de poules récupérés (%d ignorés — déjà joués/en cours)",
@@ -72,27 +81,42 @@ def get_group_stage_matches(date_from: str = GROUP_STAGE_FROM,
 # --------------------------------------------------------------------------- #
 
 _rank_map_cache: dict[int, int] | None = None
+_group_rank_maps: dict[str, dict[int, int]] = {}  # par groupe
 
 
-def _build_group_rank_map() -> dict[int, int]:
-    """Construit {team_id: position_dans_son_groupe} pour les 48 équipes."""
-    global _rank_map_cache
-    if _rank_map_cache is not None:
-        return _rank_map_cache
+def _build_group_rank_maps() -> dict[str, dict[int, int]]:
+    """Construit {groupe: {team_id: position}} pour tous les groupes."""
+    global _group_rank_maps
+    if _group_rank_maps:
+        return _group_rank_maps
 
-    rank_map: dict[int, int] = {}
     data = fbd._get(f"/competitions/{WC_CODE}/standings")
-    if data:
-        for table in data.get("standings", []):
-            if table.get("type") != "TOTAL":
-                continue
-            for row in table.get("table", []):
-                team_id = row.get("team", {}).get("id")
-                if team_id is not None:
-                    rank_map[team_id] = row.get("position", 99)
-    logger.info("Coupe du Monde : classements chargés pour %d équipes", len(rank_map))
-    _rank_map_cache = rank_map
-    return rank_map
+    if not data:
+        logger.warning("Coupe du Monde : classements non disponibles")
+        return {}
+
+    for table in data.get("standings", []):
+        if table.get("type") != "TOTAL":
+            continue
+        # Le nom du groupe est dans 'group' (ex: "GROUP_A")
+        group_name = table.get("group", "Groupe inconnu")
+        group_rank_map: dict[int, int] = {}
+        for row in table.get("table", []):
+            team_id = row.get("team", {}).get("id")
+            if team_id is not None:
+                group_rank_map[team_id] = row.get("position", 99)
+        if group_rank_map:
+            _group_rank_maps[group_name] = group_rank_map
+
+    logger.info("Coupe du Monde : classements chargés pour %d groupes", len(_group_rank_maps))
+    return _group_rank_maps
+
+
+def get_team_rank_in_group(team_id: int, group: str) -> int:
+    """Retourne le rang (1-4) d'une équipe dans son groupe."""
+    maps = _build_group_rank_maps()
+    group_map = maps.get(group, {})
+    return group_map.get(team_id, 99)
 
 
 # --------------------------------------------------------------------------- #
@@ -105,24 +129,31 @@ def enrich_match(match: dict, with_form: bool = True) -> dict:
       - classement intra-groupe (toujours, 1 seul appel API mutualisé)
       - forme des équipes + H2H (optionnel : 3 appels/match, ~6s chacun)
     """
-    rank_map = _build_group_rank_map()
+    # Récupération du groupe du match
+    group = match.get("group", "")
     home_id = match["homeTeam"]["id"]
     away_id = match["awayTeam"]["id"]
 
+    # Classement intra-groupe
+    home_rank = get_team_rank_in_group(home_id, group)
+    away_rank = get_team_rank_in_group(away_id, group)
+
     # Tableau synthétique compatible avec _get_rank_fbd de l'analyzer
     match["_standings"] = [
-        {"team": {"id": home_id}, "position": rank_map.get(home_id, 99)},
-        {"team": {"id": away_id}, "position": rank_map.get(away_id, 99)},
+        {"team": {"id": home_id}, "position": home_rank},
+        {"team": {"id": away_id}, "position": away_rank},
     ]
 
     if with_form:
+        logger.debug("Enrichissement forme pour %s vs %s", match["homeTeam"]["name"], match["awayTeam"]["name"])
         match["_home_form"] = fbd.get_team_form(home_id)
         match["_away_form"] = fbd.get_team_form(away_id)
-        match["_h2h"]       = fbd.get_h2h(match["id"])
+        match["_h2h"] = fbd.get_h2h(match["id"])
     else:
+        # Mode rapide : formes vides, pas de H2H
         match["_home_form"] = []
         match["_away_form"] = []
-        match["_h2h"]       = []
+        match["_h2h"] = []
 
     return match
 

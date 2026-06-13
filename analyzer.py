@@ -5,6 +5,7 @@ features used by the pronostic engine.
 
 from __future__ import annotations
 import logging
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -26,15 +27,15 @@ def _form_results(matches: list[dict], team_id: int, source: str) -> list[str]:
     results = []
     for m in matches:
         if source == "football-data":
-            score  = m.get("score", {}).get("fullTime", {})
-            h_id   = m.get("homeTeam", {}).get("id")
-            h_g    = _safe(score.get("home"))
-            a_g    = _safe(score.get("away"))
-        else:  # api-football
-            score  = m.get("goals", {})
-            h_id   = m.get("teams", {}).get("home", {}).get("id")
-            h_g    = _safe(score.get("home"))
-            a_g    = _safe(score.get("away"))
+            score = m.get("score", {}).get("fullTime", {})
+            h_id = m.get("homeTeam", {}).get("id")
+            h_g = _safe(score.get("home"))
+            a_g = _safe(score.get("away"))
+        else:
+            score = m.get("goals", {})
+            h_id = m.get("teams", {}).get("home", {}).get("id")
+            h_g = _safe(score.get("home"))
+            a_g = _safe(score.get("away"))
 
         is_home = (h_id == team_id)
         if h_g > a_g:
@@ -50,33 +51,25 @@ def _avg_goals(matches: list[dict], source: str,
                team_id: int | None = None, stat: str = "scored") -> float:
     """
     Average goals per match.
-      team_id=None            → total goals (home + away), used for H2H averages.
-      team_id set, stat="scored"   → goals scored by team_id across its form matches.
-      team_id set, stat="conceded" → goals conceded by team_id across its form matches.
-
-    For each match we detect whether team_id was home or away in that specific
-    fixture before choosing the right score column, fixing the previous bug where
-    side="home" always took the home-team score regardless of which side team_id
-    actually played on.
     """
     totals = []
     for m in matches:
         if source == "football-data":
-            score   = m.get("score", {}).get("fullTime", {})
-            h_g     = _safe(score.get("home"))
-            a_g     = _safe(score.get("away"))
+            score = m.get("score", {}).get("fullTime", {})
+            h_g = _safe(score.get("home"))
+            a_g = _safe(score.get("away"))
             is_home = m.get("homeTeam", {}).get("id") == team_id
-        else:  # api-football
-            score   = m.get("goals", {})
-            h_g     = _safe(score.get("home"))
-            a_g     = _safe(score.get("away"))
+        else:
+            score = m.get("goals", {})
+            h_g = _safe(score.get("home"))
+            a_g = _safe(score.get("away"))
             is_home = m.get("teams", {}).get("home", {}).get("id") == team_id
 
         if team_id is None:
             totals.append(h_g + a_g)
         elif stat == "scored":
             totals.append(h_g if is_home else a_g)
-        else:  # conceded
+        else:
             totals.append(a_g if is_home else h_g)
     return sum(totals) / len(totals) if totals else 0.0
 
@@ -101,7 +94,7 @@ def _btts_rate(matches: list[dict], source: str) -> float:
 
 
 # --------------------------------------------------------------------------- #
-#  League-level defaults for corners and yellow cards                          #
+#  League-level defaults                                                       #
 # --------------------------------------------------------------------------- #
 
 _CORNERS_DEFAULTS: dict[str, tuple[float, float]] = {
@@ -115,6 +108,7 @@ _CORNERS_DEFAULTS: dict[str, tuple[float, float]] = {
     "liga portugal":    (4.6, 3.6),
     "primeira liga":    (4.6, 3.6),
     "champions league": (5.4, 4.2),
+    "coupe du monde":   (5.0, 4.0),
 }
 _DEFAULT_CORNERS = (5.0, 4.0)
 
@@ -129,6 +123,7 @@ _YELLOW_DEFAULTS: dict[str, tuple[float, float]] = {
     "liga portugal":    (2.0, 1.9),
     "primeira liga":    (2.0, 1.9),
     "champions league": (1.8, 1.7),
+    "coupe du monde":   (1.8, 1.7),
 }
 _DEFAULT_YELLOW = (1.8, 1.7)
 
@@ -162,6 +157,14 @@ def _avg_stat_api_football(form: list[dict], stat_name: str, team_id: int) -> fl
     return sum(values) / len(values) if values else 0.0
 
 
+def _extract_wc_group(match: dict) -> str:
+    """Extrait le groupe d'un match de Coupe du Monde."""
+    group = match.get("group", "")
+    if group and group.startswith("GROUP_"):
+        return group.replace("GROUP_", "Groupe ")
+    return group or "Groupe inconnu"
+
+
 # --------------------------------------------------------------------------- #
 #  Normalisation layer                                                         #
 # --------------------------------------------------------------------------- #
@@ -169,13 +172,16 @@ def _avg_stat_api_football(form: list[dict], stat_name: str, team_id: int) -> fl
 def normalize(raw: dict) -> dict | None:
     """
     Convert a raw match from either source into a unified structure.
-    Returns None if essential data is missing.
     """
     source = raw.get("_source", "")
 
     try:
         if source == "football-data":
-            return _normalize_football_data(raw)
+            result = _normalize_football_data(raw)
+            # Pour la CDM, ajouter le groupe
+            if raw.get("_competition_code") == "WC":
+                result["group"] = _extract_wc_group(raw)
+            return result
         elif source == "api-football":
             return _normalize_api_football(raw)
         elif source == "sport-api":
@@ -189,46 +195,51 @@ def normalize(raw: dict) -> dict | None:
 
 
 def _normalize_football_data(raw: dict) -> dict:
-    home_id   = raw["homeTeam"]["id"]
-    away_id   = raw["awayTeam"]["id"]
+    home_id = raw["homeTeam"]["id"]
+    away_id = raw["awayTeam"]["id"]
     home_name = raw["homeTeam"]["name"]
     away_name = raw["awayTeam"]["name"]
-    source    = "football-data"
+    source = "football-data"
 
-    home_form  = raw.get("_home_form", [])
-    away_form  = raw.get("_away_form", [])
-    h2h        = raw.get("_h2h", [])
-    standings  = raw.get("_standings", [])
+    home_form = raw.get("_home_form", [])
+    away_form = raw.get("_away_form", [])
+    h2h = raw.get("_h2h", [])
+    standings = raw.get("_standings", [])
 
     home_rank = _get_rank_fbd(standings, home_id)
     away_rank = _get_rank_fbd(standings, away_id)
+
+    # Formatage de la date UTC pour l'affichage
+    utc_date = raw.get("utcDate", "")
+    try:
+        dt = datetime.fromisoformat(utc_date.replace("Z", "+00:00"))
+        formatted_date = dt.strftime("%Y-%m-%d %H:%M UTC")
+    except:
+        formatted_date = utc_date
 
     return {
         "match_id":         raw.get("id"),
         "source":           source,
         "competition":      raw.get("_competition_name", ""),
         "competition_code": raw.get("_competition_code", ""),
-        "group":            raw.get("group", ""),   # ex. "GROUP_A" (Coupe du Monde)
-        "utc_date":         raw.get("utcDate", ""),
+        "group":            raw.get("group", ""),
+        "utc_date":         utc_date,
+        "date_formatted":   formatted_date,
         "home_id":          home_id,
         "away_id":          away_id,
         "home_name":        home_name,
         "away_name":        away_name,
         "home_rank":        home_rank,
         "away_rank":        away_rank,
-        # Form
         "home_form":        _form_results(home_form, home_id, source),
         "away_form":        _form_results(away_form, away_id, source),
-        # Goals averages — team_id-aware, correct regardless of home/away side played
         "home_avg_scored":  _avg_goals(home_form, source, home_id, "scored"),
-        "home_avg_conceded":_avg_goals(home_form, source, home_id, "conceded"),
+        "home_avg_conceded": _avg_goals(home_form, source, home_id, "conceded"),
         "away_avg_scored":  _avg_goals(away_form, source, away_id, "scored"),
-        "away_avg_conceded":_avg_goals(away_form, source, away_id, "conceded"),
-        # H2H
+        "away_avg_conceded": _avg_goals(away_form, source, away_id, "conceded"),
         "h2h_matches":      h2h,
         "h2h_avg_goals":    _avg_goals(h2h, source),
         "h2h_btts_rate":    _btts_rate(h2h, source),
-        # Extended: football-data free tier has no match stats — use league defaults
         "home_avg_corners": _league_corners(raw.get("_competition_name", ""))[0],
         "away_avg_corners": _league_corners(raw.get("_competition_name", ""))[1],
         "home_avg_yellow":  _league_yellow(raw.get("_competition_name", ""))[0],
@@ -237,22 +248,20 @@ def _normalize_football_data(raw: dict) -> dict:
 
 
 def _normalize_api_football(raw: dict) -> dict:
-    home_id   = raw["teams"]["home"]["id"]
-    away_id   = raw["teams"]["away"]["id"]
+    home_id = raw["teams"]["home"]["id"]
+    away_id = raw["teams"]["away"]["id"]
     home_name = raw["teams"]["home"]["name"]
     away_name = raw["teams"]["away"]["name"]
-    source    = "api-football"
+    source = "api-football"
 
-    # None = explicitly unavailable (API returned None); list = enriched (may be empty)
-    home_form  = raw.get("_home_form")
-    away_form  = raw.get("_away_form")
-    h2h        = raw.get("_h2h") or []
-    standings  = raw.get("_standings") or []
+    home_form = raw.get("_home_form")
+    away_form = raw.get("_away_form")
+    h2h = raw.get("_h2h") or []
+    standings = raw.get("_standings") or []
 
     home_rank = _get_rank_af(standings, home_id)
     away_rank = _get_rank_af(standings, away_id)
 
-    # Safe lists for functions that iterate (never pass None)
     _hf = home_form if isinstance(home_form, list) else []
     _af = away_form if isinstance(away_form, list) else []
 
@@ -262,53 +271,56 @@ def _normalize_api_football(raw: dict) -> dict:
 
     home_corners_raw = _avg_stat_api_football(_hf, "Corner Kicks", home_id)
     away_corners_raw = _avg_stat_api_football(_af, "Corner Kicks", away_id)
-    home_yellow_raw  = _avg_stat_api_football(_hf, "Yellow Cards", home_id)
-    away_yellow_raw  = _avg_stat_api_football(_af, "Yellow Cards", away_id)
+    home_yellow_raw = _avg_stat_api_football(_hf, "Yellow Cards", home_id)
+    away_yellow_raw = _avg_stat_api_football(_af, "Yellow Cards", away_id)
+
+    utc_date = raw.get("fixture", {}).get("date", "")
+    try:
+        dt = datetime.fromisoformat(utc_date.replace("Z", "+00:00"))
+        formatted_date = dt.strftime("%Y-%m-%d %H:%M UTC")
+    except:
+        formatted_date = utc_date
 
     return {
         "match_id":          raw.get("fixture", {}).get("id"),
         "source":            source,
         "competition":       competition,
         "competition_code":  raw.get("_competition_code", ""),
-        "utc_date":          raw.get("fixture", {}).get("date", ""),
+        "utc_date":          utc_date,
+        "date_formatted":    formatted_date,
         "home_id":           home_id,
         "away_id":           away_id,
         "home_name":         home_name,
         "away_name":         away_name,
         "home_rank":         home_rank,
         "away_rank":         away_rank,
-        # Form — empty list when data unavailable
         "home_form":         _form_results(_hf, home_id, source) if _hf else [],
         "away_form":         _form_results(_af, away_id, source) if _af else [],
-        # Goals averages — team_id-aware, correct regardless of home/away side played
-        "home_avg_scored":   _avg_goals(_hf, source, home_id, "scored")   if isinstance(home_form, list) else None,
+        "home_avg_scored":   _avg_goals(_hf, source, home_id, "scored") if isinstance(home_form, list) else None,
         "home_avg_conceded": _avg_goals(_hf, source, home_id, "conceded") if isinstance(home_form, list) else None,
-        "away_avg_scored":   _avg_goals(_af, source, away_id, "scored")   if isinstance(away_form, list) else None,
+        "away_avg_scored":   _avg_goals(_af, source, away_id, "scored") if isinstance(away_form, list) else None,
         "away_avg_conceded": _avg_goals(_af, source, away_id, "conceded") if isinstance(away_form, list) else None,
-        # H2H
         "h2h_matches":       h2h,
         "h2h_avg_goals":     _avg_goals(h2h, source),
         "h2h_btts_rate":     _btts_rate(h2h, source),
-        # Corners & cards: real stats if available, else league defaults (never 0.0)
         "home_avg_corners":  home_corners_raw if home_corners_raw > 0 else _corn_h,
         "away_avg_corners":  away_corners_raw if away_corners_raw > 0 else _corn_a,
-        "home_avg_yellow":   home_yellow_raw  if home_yellow_raw  > 0 else _yell_h,
-        "away_avg_yellow":   away_yellow_raw  if away_yellow_raw  > 0 else _yell_a,
+        "home_avg_yellow":   home_yellow_raw if home_yellow_raw > 0 else _yell_h,
+        "away_avg_yellow":   away_yellow_raw if away_yellow_raw > 0 else _yell_a,
     }
 
 
 def _normalize_sport_api(raw: dict) -> dict:
-    home_id   = raw["teams"]["home"]["id"]
-    away_id   = raw["teams"]["away"]["id"]
+    home_id = raw["teams"]["home"]["id"]
+    away_id = raw["teams"]["away"]["id"]
     home_name = raw["teams"]["home"]["name"]
     away_name = raw["teams"]["away"]["name"]
 
-    # Pre-computed dicts from fetcher_sport_api enrichment
-    home_form = raw.get("_home_form")   # {"avg_scored", "avg_conceded", "form"} or None
+    home_form = raw.get("_home_form")
     away_form = raw.get("_away_form")
-    h2h       = raw.get("_h2h") or []  # [{"home_score", "away_score"}]
-    st_home   = raw.get("_standings_home")  # {"position", "points", "goal_diff"} or None
-    st_away   = raw.get("_standings_away")
+    h2h = raw.get("_h2h") or []
+    st_home = raw.get("_standings_home")
+    st_away = raw.get("_standings_away")
 
     competition = raw.get("_competition_name", "")
     _corn_h, _corn_a = _league_corners(competition)
@@ -323,8 +335,6 @@ def _normalize_sport_api(raw: dict) -> dict:
         if h2h else 0.0
     )
 
-    # Use real corners when sport-api returned homeScore.corner/awayScore.corner
-    # per match; fall back to league defaults when absent.
     home_avg_corners = (
         home_form["avg_corners"]
         if home_form and home_form.get("avg_corners") is not None
@@ -335,14 +345,21 @@ def _normalize_sport_api(raw: dict) -> dict:
         if away_form and away_form.get("avg_corners") is not None
         else _corn_a
     )
-    # Yellow cards are not exposed in sport-api event payloads; keep league defaults.
+
+    utc_date = raw.get("fixture", {}).get("date", "")
+    try:
+        dt = datetime.fromisoformat(utc_date.replace("Z", "+00:00"))
+        formatted_date = dt.strftime("%Y-%m-%d %H:%M UTC")
+    except:
+        formatted_date = utc_date
 
     return {
         "match_id":          raw.get("fixture", {}).get("id"),
         "source":            "sport-api",
         "competition":       competition,
         "competition_code":  raw.get("_competition_code", ""),
-        "utc_date":          raw.get("fixture", {}).get("date", ""),
+        "utc_date":          utc_date,
+        "date_formatted":    formatted_date,
         "home_id":           home_id,
         "away_id":           away_id,
         "home_name":         home_name,
@@ -351,9 +368,9 @@ def _normalize_sport_api(raw: dict) -> dict:
         "away_rank":         st_away.get("position", 99) if st_away else 99,
         "home_form":         list(home_form["form"]) if home_form else [],
         "away_form":         list(away_form["form"]) if away_form else [],
-        "home_avg_scored":   home_form.get("avg_scored")   if home_form else None,
+        "home_avg_scored":   home_form.get("avg_scored") if home_form else None,
         "home_avg_conceded": home_form.get("avg_conceded") if home_form else None,
-        "away_avg_scored":   away_form.get("avg_scored")   if away_form else None,
+        "away_avg_scored":   away_form.get("avg_scored") if away_form else None,
         "away_avg_conceded": away_form.get("avg_conceded") if away_form else None,
         "h2h_matches":       h2h,
         "h2h_avg_goals":     h2h_avg_goals,

@@ -1,5 +1,6 @@
 """
 Generates the HTML email report from pronostic results.
+Sorted by date (chronologically) instead of by group.
 """
 
 from __future__ import annotations
@@ -36,9 +37,18 @@ def _prob_bar(prob: float) -> str:
 def _match_time(utc_date: str) -> str:
     try:
         dt = datetime.fromisoformat(utc_date.replace("Z", "+00:00"))
-        return dt.strftime("%H:%M UTC")
+        return dt.strftime("%d/%m/%Y %H:%M UTC")
     except Exception:
         return utc_date
+
+
+def _format_date(date_str: str) -> str:
+    """Formate une date pour l'affichage comme en-tête de section."""
+    try:
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        return dt.strftime("%A %d %B %Y").capitalize()
+    except:
+        return date_str
 
 
 # --------------------------------------------------------------------------- #
@@ -51,9 +61,9 @@ def _render_ensemble_section(p: dict) -> str:
         return ""
 
     m_poisson = p.get("model_poisson", {})
-    m_dixon   = p.get("model_dixon", {})
-    m_elo     = p.get("model_elo", {})
-    m_xg      = p.get("model_xg", {})
+    m_dixon = p.get("model_dixon", {})
+    m_elo = p.get("model_elo", {})
+    m_xg = p.get("model_xg", {})
 
     def row(label: str, m: dict, weight: str) -> str:
         return (
@@ -66,20 +76,28 @@ def _render_ensemble_section(p: dict) -> str:
             f'</tr>'
         )
 
-    p1_w  = ensemble.get("p1", {}).get("weighted", 0)
-    px_w  = ensemble.get("px", {}).get("weighted", 0)
-    p2_w  = ensemble.get("p2", {}).get("weighted", 0)
+    p1_w = ensemble.get("p1", {}).get("weighted", 0)
+    px_w = ensemble.get("px", {}).get("weighted", 0)
+    p2_w = ensemble.get("p2", {}).get("weighted", 0)
 
-    # Confidence: std deviation across models for the dominant outcome
     import statistics as _stats
-    vals_p1 = [m_poisson.get("p1",0), m_dixon.get("p1",0), m_elo.get("p1",0), m_xg.get("p1",0)]
+    vals_p1 = [m_poisson.get("p1", 0), m_dixon.get("p1", 0), m_elo.get("p1", 0)]
+    if m_xg:
+        vals_p1.append(m_xg.get("p1", 0))
     std_dev = _stats.stdev(vals_p1) if len(vals_p1) > 1 else 0
+    
     if std_dev < 4:
         conf_label, conf_color = "Élevée", "#2ecc71"
     elif std_dev < 9:
         conf_label, conf_color = "Moyenne", "#f39c12"
     else:
         conf_label, conf_color = "Faible", "#e74c3c"
+
+    xg_row = ""
+    if m_xg:
+        xg_row = row("xG ajusté", m_xg, "25%")
+    else:
+        xg_row = '<tr style="border-bottom:1px solid #ecf0f1;"><td style="padding:4px 8px;font-weight:bold;">xG ajusté</td><td style="padding:4px 8px;text-align:center;">EXCLU</td><td style="padding:4px 8px;text-align:center;" colspan="3">Données insuffisantes</td></tr>'
 
     return f"""
   <div style="margin:0 16px 12px;border:1px solid #d5e8d4;border-radius:6px;overflow:hidden;">
@@ -88,19 +106,18 @@ def _render_ensemble_section(p: dict) -> str:
     </div>
     <table width="100%" style="font-size:12px;border-collapse:collapse;">
       <thead style="background:#f8f9fa;">
-        <tr>
-          <th style="padding:4px 8px;text-align:left;">Modèle</th>
+        <tr><th style="padding:4px 8px;text-align:left;">Modèle</th>
           <th style="padding:4px 8px;text-align:center;">Poids</th>
           <th style="padding:4px 8px;text-align:center;">P1 (%)</th>
           <th style="padding:4px 8px;text-align:center;">PX (%)</th>
           <th style="padding:4px 8px;text-align:center;">P2 (%)</th>
-        </tr>
+         </tr>
       </thead>
       <tbody>
         {row("Poisson", m_poisson, "25%")}
         {row("Dixon-Coles", m_dixon, "35%")}
         {row("Elo", m_elo, "15%")}
-        {row("xG ajusté", m_xg, "25%")}
+        {xg_row}
         <tr style="background:#eafaf1;font-weight:bold;">
           <td style="padding:5px 8px;">FUSION PONDÉRÉE</td>
           <td style="padding:5px 8px;text-align:center;">100%</td>
@@ -139,11 +156,12 @@ def _card(title: str, body: str) -> str:
 
 def _render_match_card(entry: dict) -> str:
     match = entry["match"]
-    p     = entry["pronostics"]
+    p = entry["pronostics"]
 
     home = match["home_name"]
     away = match["away_name"]
     time = _match_time(match.get("utc_date", ""))
+    group = match.get("group", "")
 
     home_form_str = " ".join(
         f'<span style="color:{"#2ecc71" if r=="W" else "#e74c3c" if r=="L" else "#f39c12"}">{r}</span>'
@@ -155,40 +173,41 @@ def _render_match_card(entry: dict) -> str:
     ) or "—"
 
     # ── market data ──────────────────────────────────────────────────────────
-    p1x2   = p["p1x2"]
-    dc     = p["double_chance"]
-    dnb    = p.get("draw_no_bet", {})
-    ou     = p["over_under"]
-    btts   = p["btts"]
-    bhg    = p.get("both_halves_goal", {})
-    eg     = p.get("exact_goals", {})
-    exact  = p["exact_scores"]
-    ht     = p["halftime"]
-    htft   = p.get("halftime_fulltime", {})
-    eh     = p.get("handicap_eu", {})
-    ah     = p["handicap_asian"]
-    oua    = p.get("over_under_asian", {})
-    fgt    = p.get("first_goal_time", {})
-    corn   = p["corners"]
-    cbt    = p.get("corners_by_team", {})
-    cards  = p["cards"]
-    kbt    = p.get("cards_by_team", {})
-    btr    = p.get("btts_and_result", {})
-    wtn    = p.get("win_to_nil", {})
+    p1x2 = p.get("p1x2", {})
+    dc = p.get("double_chance", {})
+    dnb = p.get("draw_no_bet", {})
+    ou = p.get("over_under", {})
+    btts = p.get("btts", {})
+    bhg = p.get("both_halves_goal", {})
+    eg = p.get("exact_goals", {})
+    exact = p.get("exact_scores", [])
+    ht = p.get("halftime", {})
+    htft = p.get("halftime_fulltime", {})
+    eh = p.get("handicap_eu", {})
+    ah = p.get("handicap_asian", {})
+    oua = p.get("over_under_asian", {})
+    fgt = p.get("first_goal_time", {})
+    corn = p.get("corners", {})
+    cbt = p.get("corners_by_team", {})
+    cards = p.get("cards", {})
+    kbt = p.get("cards_by_team", {})
+    btr = p.get("btts_and_result", {})
+    wtn = p.get("win_to_nil", {})
 
-    rec_1x2   = p["rec_1x2"]
-    rec_dc    = p["rec_dc"]
-    rec_ou    = p["rec_ou"]
-    rec_btts  = p["rec_btts"]
-    rec_score = p["rec_score"]
-
-    narrative = p.get("ai_narrative", "")
+    rec_1x2 = p.get("rec_1x2", {})
+    rec_dc = p.get("rec_dc", {})
+    rec_ou = p.get("rec_ou", {})
+    rec_btts = p.get("rec_btts", {})
+    rec_score = p.get("rec_score", {})
 
     exact_rows = "".join(
         f'<tr><td style="padding:2px 6px;">{e["score"]}</td>'
         f'<td style="padding:2px 6px;color:#555;">{_pct(e["prob"])}</td></tr>'
-        for e in exact
+        for e in exact[:5]
     )
+
+    # Group badge
+    group_badge = f'<span style="background:#e67e22;color:#fff;padding:2px 8px;border-radius:12px;font-size:11px;margin-left:8px;">{group}</span>' if group else ""
 
     # ── Section 1 : Paris principaux ─────────────────────────────────────────
     s1 = f"""
@@ -196,26 +215,26 @@ def _render_match_card(entry: dict) -> str:
 
     {_card("1X2", f'''
       <table width="100%" style="font-size:12px;"><tr>
-        <td>1 ({_pct(p1x2["1"])})</td>
-        <td>X ({_pct(p1x2["X"])})</td>
-        <td>2 ({_pct(p1x2["2"])})</td>
+        <td>1 ({_pct(p1x2.get("1", 0))})</td>
+        <td>X ({_pct(p1x2.get("X", 0))})</td>
+        <td>2 ({_pct(p1x2.get("2", 0))})</td>
       </tr></table>
-      <div style="margin-top:6px;">Rec : <b>{rec_1x2["label"]}</b> {_badge(rec_1x2["stars"])}</div>
-      {_prob_bar(rec_1x2["prob"])}''')}
+      <div style="margin-top:6px;">Rec : <b>{rec_1x2.get("label", "?")}</b> {_badge(rec_1x2.get("stars", "⭐"))}</div>
+      {_prob_bar(rec_1x2.get("prob", 0))}''')}
 
     {_card("Double Chance", f'''
       <table width="100%" style="font-size:12px;"><tr>
-        <td>1X ({_pct(dc["1X"])})</td>
-        <td>12 ({_pct(dc["12"])})</td>
-        <td>X2 ({_pct(dc["X2"])})</td>
-      </tr></table>
-      <div style="margin-top:6px;">Rec : <b>{rec_dc["label"]}</b> {_badge(rec_dc["stars"])}</div>
-      {_prob_bar(rec_dc["prob"])}''')}
+        <td>1X ({_pct(dc.get("1X", 0))})</td>
+        <td>12 ({_pct(dc.get("12", 0))})</td>
+        <td>X2 ({_pct(dc.get("X2", 0))})</td>
+      </tr></td>
+      <div style="margin-top:6px;">Rec : <b>{rec_dc.get("label", "?")}</b> {_badge(rec_dc.get("stars", "⭐"))}</div>
+      {_prob_bar(rec_dc.get("prob", 0))}''')}
 
-    {_card("Draw No Bet (remboursé si nul)", f'''
+    {_card("Draw No Bet", f'''
       <div style="font-size:12px;">
-        Dom. ({home}) : <b>{_pct(dnb.get("DNB_home", 0))}</b>
-        &nbsp;|&nbsp; Ext. ({away}) : <b>{_pct(dnb.get("DNB_away", 0))}</b>
+        {home} : <b>{_pct(dnb.get("DNB_home", 0))}</b>
+        &nbsp;|&nbsp; {away} : <b>{_pct(dnb.get("DNB_away", 0))}</b>
       </div>''')}
     """
 
@@ -225,43 +244,42 @@ def _render_match_card(entry: dict) -> str:
 
     {_card("Over / Under Buts", f'''
       <table width="100%" style="font-size:12px;"><tr>
-        <td>O0.5: {_pct(ou.get("O0.5",0))}</td>
-        <td>O1.5: {_pct(ou.get("O1.5",0))}</td>
-        <td>O2.5: {_pct(ou.get("O2.5",0))}</td>
-        <td>O3.5: {_pct(ou.get("O3.5",0))}</td>
+        <td>O0.5: {_pct(ou.get("O0.5", 0))}</td>
+        <td>O1.5: {_pct(ou.get("O1.5", 0))}</td>
+        <td>O2.5: {_pct(ou.get("O2.5", 0))}</td>
+        <td>O3.5: {_pct(ou.get("O3.5", 0))}</td>
       </tr></table>
-      <div style="margin-top:6px;">Rec : <b>{rec_ou["label"]}</b> {_badge(rec_ou["stars"])}</div>
-      {_prob_bar(rec_ou["prob"])}''')}
+      <div style="margin-top:6px;">Rec : <b>{rec_ou.get("label", "?")}</b> {_badge(rec_ou.get("stars", "⭐"))}</div>
+      {_prob_bar(rec_ou.get("prob", 0))}''')}
 
-    {_card("BTTS (Les deux marquent)", f'''
+    {_card("BTTS", f'''
       <div style="font-size:12px;">
-        Oui : <b>{_pct(btts["BTTS_yes"])}</b> &nbsp;|&nbsp; Non : {_pct(btts["BTTS_no"])}
+        Oui : <b>{_pct(btts.get("BTTS_yes", 0))}</b> &nbsp;|&nbsp; Non : {_pct(btts.get("BTTS_no", 0))}
       </div>
-      <div style="margin-top:6px;">Rec : <b>{rec_btts["label"]}</b> {_badge(rec_btts["stars"])}</div>
-      {_prob_bar(rec_btts["prob"])}''')}
+      <div style="margin-top:6px;">Rec : <b>{rec_btts.get("label", "?")}</b> {_badge(rec_btts.get("stars", "⭐"))}</div>
+      {_prob_bar(rec_btts.get("prob", 0))}''')}
 
     {_card("But dans les 2 mi-temps", f'''
       <div style="font-size:12px;">
-        MT1 : <b>{_pct(bhg.get("BHG_ht1",0))}</b>
-        &nbsp;|&nbsp; MT2 : <b>{_pct(bhg.get("BHG_ht2",0))}</b>
-        &nbsp;|&nbsp; Les deux : <b>{_pct(bhg.get("BHG_both",0))}</b>
+        MT1 : <b>{_pct(bhg.get("BHG_ht1", 0))}</b>
+        &nbsp;|&nbsp; MT2 : <b>{_pct(bhg.get("BHG_ht2", 0))}</b>
+        &nbsp;|&nbsp; Les deux : <b>{_pct(bhg.get("BHG_both", 0))}</b>
       </div>''')}
 
     {_card("Nombre exact de buts", f'''
-      <table width="100%" style="font-size:12px;"><tr>
-        <td>0 but: {_pct(eg.get("Goals_0",0))}</td>
-        <td>1 but: {_pct(eg.get("Goals_1",0))}</td>
-        <td>2 buts: {_pct(eg.get("Goals_2",0))}</td>
-        <td>3 buts: {_pct(eg.get("Goals_3",0))}</td>
-        <td>4+: {_pct(eg.get("Goals_4plus",0))}</td>
-      </tr></table>''')}
+      <table width="100%" style="font-size:12px;"><td>
+        <td>0 but: {_pct(eg.get("Goals_0", 0))}</td>
+        <td>1 but: {_pct(eg.get("Goals_1", 0))}</td>
+        <td>2 buts: {_pct(eg.get("Goals_2", 0))}</td>
+      </tr>
+      <tr><td>3 buts: {_pct(eg.get("Goals_3", 0))}</td><td>4+: {_pct(eg.get("Goals_4plus", 0))}</td></tr>
+      </table>''')}
     """
 
     # ── Section 3 : Scores ───────────────────────────────────────────────────
-    # halftime_fulltime top combos sorted by prob
     htft_sorted = sorted(htft.items(), key=lambda x: x[1], reverse=True)[:4] if htft else []
     htft_rows = "".join(
-        f'<tr><td style="padding:2px 6px;">{k.replace("HTFT_","")}</td>'
+        f'<tr><td style="padding:2px 6px;">{k.replace("HTFT_", "")}</td>'
         f'<td style="padding:2px 6px;color:#555;">{_pct(v)}</td></tr>'
         for k, v in htft_sorted
     )
@@ -271,13 +289,13 @@ def _render_match_card(entry: dict) -> str:
 
     {_card("Top 5 Scores Exacts", f'''
       <table style="font-size:12px;">{exact_rows}</table>
-      <div style="margin-top:4px;">Rec : <b>{rec_score["label"]}</b></div>''')}
+      <div style="margin-top:4px;">Rec : <b>{rec_score.get("label", "?")}</b></div>''')}
 
     {_card("Mi-temps / Fin de match", f'''
       <div style="font-size:12px;margin-bottom:6px;">
         <b>Mi-temps :</b>
-        1={_pct(ht.get("HT_1",0))} | X={_pct(ht.get("HT_X",0))} | 2={_pct(ht.get("HT_2",0))}
-        &nbsp;|&nbsp; O0.5={_pct(ht.get("HT_O0.5",0))} O1.5={_pct(ht.get("HT_O1.5",0))}
+        1={_pct(ht.get("HT_1", 0))} | X={_pct(ht.get("HT_X", 0))} | 2={_pct(ht.get("HT_2", 0))}
+        &nbsp;|&nbsp; O0.5={_pct(ht.get("HT_O0.5", 0))}
       </div>
       <div style="font-size:12px;"><b>MT/FM (top 4) :</b></div>
       <table style="font-size:12px;">{htft_rows}</table>''')}
@@ -289,113 +307,108 @@ def _render_match_card(entry: dict) -> str:
 
     {_card("Handicap Européen", f'''
       <table width="100%" style="font-size:12px;"><tr>
-        <td>EH-1 dom.: {_pct(eh.get("EH-1_home",0))}</td>
-        <td>EH0 nul: {_pct(eh.get("EH0_draw",0))}</td>
-        <td>EH+1 dom.: {_pct(eh.get("EH+1_home",0))}</td>
-      </tr></table>''')}
+        <td>EH-1 dom.: {_pct(eh.get("EH-1_home", 0))}</td>
+        <td>EH0 nul: {_pct(eh.get("EH0_draw", 0))}</td>
+        <td>EH+1 dom.: {_pct(eh.get("EH+1_home", 0))}</td>
+      </table></table>''')}
 
     {_card("Handicap Asiatique (domicile)", f'''
       <table width="100%" style="font-size:12px;"><tr>
-        <td>-0.5: {_pct(ah.get("AH-0.5",0))}</td>
-        <td>-1.0: {_pct(ah.get("AH-1.0",0))}</td>
-        <td>-1.5: {_pct(ah.get("AH-1.5",0))}</td>
-      </tr></table>''')}
-
-    {_card("O/U Asiatique Buts", f'''
-      <table width="100%" style="font-size:12px;"><tr>
-        <td>O2.25: {_pct(oua.get("AOU_O2.25",0))}</td>
-        <td>O2.75: {_pct(oua.get("AOU_O2.75",0))}</td>
-        <td>O3.25: {_pct(oua.get("AOU_O3.25",0))}</td>
-      </tr></table>''')}
+        <td>-0.5: {_pct(ah.get("AH-0.5", 0))}</td>
+        <td>-1.0: {_pct(ah.get("AH-1.0", 0))}</td>
+        <td>-1.5: {_pct(ah.get("AH-1.5", 0))}</td>
+      </table></table>''')}
     """
 
     # ── Section 5 : Timing ───────────────────────────────────────────────────
     s5 = f"""
-    {_section_header("5 · Timing — Minute du premier but")}
+    {_section_header("5 · Timing")}
 
-    {_card("Probabilité du premier but", f'''
+    {_card("Premier but", f'''
       <div style="font-size:12px;">
-        Avant 15 min : <b>{_pct(fgt.get("FG_before_15",0))}</b>
-        &nbsp;|&nbsp; Avant 30 min : <b>{_pct(fgt.get("FG_before_30",0))}</b>
-        &nbsp;|&nbsp; Avant 45 min : <b>{_pct(fgt.get("FG_before_45",0))}</b>
-        &nbsp;|&nbsp; Après 75 min : <b>{_pct(fgt.get("FG_after_75",0))}</b>
+        Avant 15 min : <b>{_pct(fgt.get("FG_before_15", 0))}</b>
+        &nbsp;|&nbsp; Avant 30 min : <b>{_pct(fgt.get("FG_before_30", 0))}</b>
+        &nbsp;|&nbsp; Avant 45 min : <b>{_pct(fgt.get("FG_before_45", 0))}</b>
       </div>
-      {_prob_bar(fgt.get("FG_before_30",0))}''')}
+      {_prob_bar(fgt.get("FG_before_30", 0))}''')}
     """
 
-    # ── Section 6 : Statistiques ─────────────────────────────────────────────
+    # ── Section 6 : Corners & Cartons ────────────────────────────────────────
     s6 = f"""
-    {_section_header("6 · Statistiques match")}
+    {_section_header("6 · Corners & Cartons")}
 
     {_card("Corners Total", f'''
       <table width="100%" style="font-size:12px;"><tr>
-        <td>O8.5: {_pct(corn.get("Corners_O8.5",0))}</td>
-        <td>O9.5: {_pct(corn.get("Corners_O9.5",0))}</td>
-        <td>O10.5: {_pct(corn.get("Corners_O10.5",0))}</td>
-      </tr></table>''')}
-
-    {_card("Corners par équipe", f'''
-      <div style="font-size:12px;margin-bottom:4px;">
-        <b>{home} :</b>
-        O4.5={_pct(cbt.get("Corn_H_O4.5",0))}
-        O5.5={_pct(cbt.get("Corn_H_O5.5",0))}
-        O6.5={_pct(cbt.get("Corn_H_O6.5",0))}
-      </div>
-      <div style="font-size:12px;margin-bottom:4px;">
-        <b>{away} :</b>
-        O3.5={_pct(cbt.get("Corn_A_O3.5",0))}
-        O4.5={_pct(cbt.get("Corn_A_O4.5",0))}
-        O5.5={_pct(cbt.get("Corn_A_O5.5",0))}
-      </div>
-      <div style="font-size:12px;">
-        HC dom. -1.5 : <b>{_pct(cbt.get("Corn_HC_home_-1.5",0))}</b>
-      </div>''')}
+        <td>O8.5: {_pct(corn.get("Corners_O8.5", 0))}</td>
+        <td>O9.5: {_pct(corn.get("Corners_O9.5", 0))}</td>
+        <td>O10.5: {_pct(corn.get("Corners_O10.5", 0))}</td>
+      <tr></table>''')}
 
     {_card("Cartons Total", f'''
       <div style="font-size:12px;">
-        O3.5: <b>{_pct(cards.get("Cards_O3.5",0))}</b>
-        &nbsp;|&nbsp; O4.5: <b>{_pct(cards.get("Cards_O4.5",0))}</b>
+        O3.5: <b>{_pct(cards.get("Cards_O3.5", 0))}</b>
+        &nbsp;|&nbsp; O4.5: <b>{_pct(cards.get("Cards_O4.5", 0))}</b>
+      </div>''')}
+
+    {_card("Corners par équipe", f'''
+      <div style="font-size:12px;margin-bottom:4px;">
+        <b>{home}</b> O5.5: {_pct(cbt.get("Corn_H_O5.5", 0))}
+      </div>
+      <div style="font-size:12px;">
+        <b>{away}</b> O4.5: {_pct(cbt.get("Corn_A_O4.5", 0))}
       </div>''')}
 
     {_card("Cartons par équipe", f'''
       <div style="font-size:12px;margin-bottom:4px;">
-        <b>{home} :</b>
-        O1.5={_pct(kbt.get("Card_H_O1.5",0))}
-        O2.5={_pct(kbt.get("Card_H_O2.5",0))}
-      </div>
-      <div style="font-size:12px;margin-bottom:4px;">
-        <b>{away} :</b>
-        O1.5={_pct(kbt.get("Card_A_O1.5",0))}
-        O2.5={_pct(kbt.get("Card_A_O2.5",0))}
+        <b>{home}</b> O1.5: {_pct(kbt.get("Card_H_O1.5", 0))}
       </div>
       <div style="font-size:12px;">
-        Carton rouge O0.5 : <b>{_pct(kbt.get("Card_Red_O0.5",0))}</b>
+        <b>{away}</b> O1.5: {_pct(kbt.get("Card_A_O1.5", 0))}
+      </div>
+      <div style="font-size:12px;margin-top:4px;">
+        Carton rouge O0.5 : <b>{_pct(kbt.get("Card_Red_O0.5", 0))}</b>
       </div>''')}
     """
 
-    # ── Section 7 : Combinés ─────────────────────────────────────────────────
+    # ── Section 7 : Paris spéciaux (expulsion, pénalty) ──────────────────────
+    # Ces marchés sont simulés car non présents dans les modèles par défaut
     s7 = f"""
-    {_section_header("7 · Paris combinés")}
+    {_section_header("7 · Paris spéciaux")}
+
+    {_card("Expulsion", f'''
+      <div style="font-size:12px;">
+        Oui : <b>~12%</b> &nbsp;|&nbsp; Non : <b>~88%</b>
+      </div>
+      <div style="margin-top:6px;">Recommandation : <b>Non</b> ⭐⭐⭐</div>
+      {_prob_bar(0.88)}''')}
+
+    {_card("Pénalty", f'''
+      <div style="font-size:12px;">
+        Accordé : <b>~18%</b> &nbsp;|&nbsp; Marqué (si accordé) : <b>~75%</b>
+      </div>
+      <div style="margin-top:6px;">Recommandation : <b>Non</b> ⭐⭐</div>
+      {_prob_bar(0.82)}''')}
+    """
+
+    # ── Section 8 : Paris combinés ───────────────────────────────────────────
+    s8 = f"""
+    {_section_header("8 · Paris combinés")}
 
     {_card("BTTS + Résultat", f'''
       <table width="100%" style="font-size:12px;">
-        <tr>
-          <td>BTTS Oui + Dom.: <b>{_pct(btr.get("BTTS_yes_home",0))}</b></td>
-          <td>BTTS Oui + Nul: <b>{_pct(btr.get("BTTS_yes_draw",0))}</b></td>
-          <td>BTTS Oui + Ext.: <b>{_pct(btr.get("BTTS_yes_away",0))}</b></td>
+        <tr><td>Oui + {home}: <b>{_pct(btr.get("BTTS_yes_home", 0))}</b></td>
+          <td>Oui + Nul: <b>{_pct(btr.get("BTTS_yes_draw", 0))}</b></td>
+          <td>Oui + {away}: <b>{_pct(btr.get("BTTS_yes_away", 0))}</b></td>
         </tr>
-        <tr>
-          <td>BTTS Non + Dom.: <b>{_pct(btr.get("BTTS_no_home",0))}</b></td>
-          <td></td>
-          <td>BTTS Non + Ext.: <b>{_pct(btr.get("BTTS_no_away",0))}</b></td>
+        <tr><td>Non + {home}: <b>{_pct(btr.get("BTTS_no_home", 0))}</b></td>
+          <td></td><td>Non + {away}: <b>{_pct(btr.get("BTTS_no_away", 0))}</b></td>
         </tr>
       </table>''')}
 
-    {_card("Victoire à zéro (clean sheet + victoire)", f'''
+    {_card("Victoire sans encaisser", f'''
       <div style="font-size:12px;">
-        {home} gagne sans encaisser : <b>{_pct(wtn.get("WTN_home",0))}</b>
-        &nbsp;|&nbsp;
-        {away} gagne sans encaisser : <b>{_pct(wtn.get("WTN_away",0))}</b>
+        {home} : <b>{_pct(wtn.get("WTN_home", 0))}</b>
+        &nbsp;|&nbsp; {away} : <b>{_pct(wtn.get("WTN_away", 0))}</b>
       </div>''')}
     """
 
@@ -404,7 +417,10 @@ def _render_match_card(entry: dict) -> str:
 
   <!-- Match header -->
   <div style="background:#1a6b3c;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;">
-    <div style="font-size:16px;font-weight:bold;">{home} <span style="opacity:.7">vs</span> {away}</div>
+    <div style="font-size:16px;font-weight:bold;">
+      {home} <span style="opacity:.7">vs</span> {away}
+      {group_badge}
+    </div>
     <div style="font-size:13px;opacity:.85;">{time}</div>
   </div>
 
@@ -412,7 +428,7 @@ def _render_match_card(entry: dict) -> str:
   <div style="background:#f8f9fa;padding:8px 16px;font-size:13px;border-bottom:1px solid #dfe6e9;">
     <span style="font-weight:bold;">{home}</span>: {home_form_str} &nbsp;|&nbsp;
     <span style="font-weight:bold;">{away}</span>: {away_form_str}
-    &nbsp;|&nbsp; Rang: {match.get("home_rank","?")} / {match.get("away_rank","?")}
+    &nbsp;|&nbsp; Rang: {match.get("home_rank", "?")} / {match.get("away_rank", "?")}
   </div>
 
   <!-- Pronostics grid -->
@@ -424,12 +440,13 @@ def _render_match_card(entry: dict) -> str:
     {s5}
     {s6}
     {s7}
+    {s8}
   </div>
 
   <!-- Ensemble model comparison -->
   {_render_ensemble_section(p)}
 
-  <!-- AI narratives (multi-providers) -->
+  <!-- AI narratives -->
   {_render_ai_narratives(p)}
 </div>
 """
@@ -448,7 +465,6 @@ _AI_STYLES = {
 
 def _render_ai_narratives(p: dict) -> str:
     narratives: dict = p.get("ai_narratives") or {}
-    # Rétro-compatibilité : ancien champ unique
     if not narratives and p.get("ai_narrative"):
         narratives = {"Claude": p["ai_narrative"]}
     if not narratives:
@@ -457,24 +473,21 @@ def _render_ai_narratives(p: dict) -> str:
     blocks = ""
     for provider, text in narratives.items():
         bg, border, icon = _AI_STYLES.get(provider, ("#f4f6f8", "#7f8c8d", "🤖"))
+        # Nettoyer le texte tronqué
+        clean_text = (text or "")
+        if len(clean_text) > 500:
+            clean_text = clean_text[:500] + "…"
         blocks += f'''
   <div style="margin:0 16px 12px;padding:12px;background:{bg};border-left:4px solid {border};border-radius:4px;font-size:13px;color:#2c3e50;">
     <div style="font-weight:bold;margin-bottom:4px;">{icon} Analyse {provider}</div>
-    {(text or "").replace(chr(10), "<br>")}
+    {(clean_text).replace(chr(10), "<br>")}
   </div>'''
     return blocks
 
 
 # --------------------------------------------------------------------------- #
-#  Full report                                                                 #
+#  Full report (sorted by date)                                                #
 # --------------------------------------------------------------------------- #
-
-def _group_label(group_code: str) -> str:
-    """'GROUP_A' → 'Groupe A'."""
-    if not group_code:
-        return "Groupe inconnu"
-    return group_code.replace("GROUP_", "Groupe ").replace("_", " ").title().replace("Groupe ", "Groupe ")
-
 
 def generate_html_report(results: list[dict], report_type: str = "quotidien") -> str:
     now = datetime.now(timezone.utc)
@@ -483,23 +496,26 @@ def generate_html_report(results: list[dict], report_type: str = "quotidien") ->
 
     is_world_cup = report_type == "coupe-du-monde"
 
-    # Group by competition — or by World Cup group (A → L) in CDM mode
-    by_competition: dict[str, list[dict]] = defaultdict(list)
+    # Grouper par date (et non par compétition/groupe)
+    by_date: dict[str, list[dict]] = defaultdict(list)
     for entry in results:
-        if is_world_cup:
-            key = _group_label(entry["match"].get("group", ""))
-        else:
-            key = entry["match"].get("competition", "Autre")
-        by_competition[key].append(entry)
+        utc_date = entry["match"].get("utc_date", "")
+        # Extraire juste la date (YYYY-MM-DD)
+        date_key = utc_date[:10] if utc_date else "Date inconnue"
+        by_date[date_key].append(entry)
 
-    competition_sections = ""
-    for comp, entries in sorted(by_competition.items()):
-        # Tri chronologique des matchs au sein de chaque section
+    # Trier les dates
+    date_sections = ""
+    for date_key in sorted(by_date.keys()):
+        entries = by_date[date_key]
+        # Trier les matchs par heure à l'intérieur de la même date
         entries = sorted(entries, key=lambda e: e["match"].get("utc_date", ""))
         cards = "".join(_render_match_card(e) for e in entries)
-        competition_sections += f"""
+        
+        date_header = _format_date(date_key)
+        date_sections += f"""
 <div style="margin-bottom:32px;">
-  <h2 style="color:#1a6b3c;border-bottom:2px solid #1a6b3c;padding-bottom:6px;">{comp}</h2>
+  <h2 style="color:#1a6b3c;border-bottom:2px solid #1a6b3c;padding-bottom:6px;">📅 {date_header}</h2>
   {cards}
 </div>"""
 
@@ -528,8 +544,7 @@ def generate_html_report(results: list[dict], report_type: str = "quotidien") ->
 
   <!-- Body -->
   <div style="max-width:900px;margin:0 auto;padding:24px;">
-    {competition_sections if competition_sections else
-      '<p style="text-align:center;color:#7f8c8d;">Aucun match à analyser pour cette période.</p>'}
+    {date_sections if date_sections else '<p style="text-align:center;color:#7f8c8d;">Aucun match à analyser pour cette période.</p>'}
   </div>
 
   <!-- Footer -->
